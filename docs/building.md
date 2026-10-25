@@ -1,0 +1,22 @@
+# Build
+
+The repository contains port source and an encrypted owner input bundle. Original game inputs, generated C, local device records, encryption keys, and decrypted app packages are excluded from Git.
+
+## Local Windows host
+
+1. Put the matching three owner-provided inputs in `binaries/` and the PC game data in `game/`.
+2. Install Python, Zig, and `requirements-recompiler.txt` in your own environment.
+3. Run `python -B tools/recompile.py` and `python -B tools/build_host_local.py`.
+4. The native host is written to `recomp/build/`. Test logs and saves belong under `recomp/run/`.
+
+`python -B tools/test_mmx.py` compares the portable MMX implementation with the real x86 CPU. Other recompiler differential tests are under `recomp/tests/`.
+
+## Owner iOS workflow
+
+The local key is a random base64 AES-256 key stored in ignored `secrets/build.key`. Configure the same value as the repository secret `NFS4_BUILD_KEY`, then use the manual `Build IPA` workflow. For your own copy of the game, run `python -B tools/ci_crypto.py bundle-inputs` to prepare a new encrypted input bundle and hash manifest with your own key.
+
+The macOS job decrypts and checks the inputs, recompiles the game, builds an arm64 unsigned app, and uploads **encrypted** IPA and diagnostic artifacts. Generated source and plaintext game inputs are never uploaded as artifacts. Forks do not receive the owner's secret.
+
+Use `tools/release-ipa.ps1 -Run <run-id>` on the owner's PC to download and decrypt a successful artifact into `dist/ipa/`. The script verifies the app version and build. It creates no public release and performs no iCloud synchronization. Keep the key private; it is not needed on the phone after decryption.
+
+LiveContainer installation and data layout: [install.md](install.md).

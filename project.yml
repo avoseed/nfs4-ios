@@ -1,0 +1,63 @@
+name: NFS4
+options:
+  bundleIdPrefix: io.github.avoseed
+  deploymentTarget:
+    iOS: "15.0"
+settings:
+  base:
+    # CI passes the real values: MARKETING_VERSION from APP_VERSION, CURRENT_PROJECT_VERSION = run number
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "0"
+targets:
+  NFS4:
+    type: application
+    platform: iOS
+    sources:
+      - path: ios/plat_ios.m
+      - path: ios/gpu_metal.m
+    info:
+      path: Support/Info.plist
+      properties:
+        CFBundleDisplayName: NFS IV
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UIStatusBarHidden: true
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        PortDataFolder: NFS4
+        # "PC에서 받기": plain HTTP from the PC on the local network (E:\ios-ports\README.md section 9)
+        NSLocalNetworkUsageDescription: PC에서 게임 파일을 받을 때 같은 와이파이의 PC에 연결합니다.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        GCSupportsControllerUserInteraction: true
+        GCSupportedGameControllers:
+          - ProfileName: ExtendedGamepad
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.avoseed.nfs4
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+        CLANG_ENABLE_OBJC_ARC: YES
+        GCC_C_LANGUAGE_STANDARD: gnu11
+        HEADER_SEARCH_PATHS: $(SRCROOT)/recomp/runtime
+        OTHER_LDFLAGS: $(SRCROOT)/ios/build/libnfs4.a
+        DEAD_CODE_STRIPPING: YES
+        LD_GENERATE_MAP_FILE: YES
+        LD_MAP_FILE_PATH: $(SRCROOT)/build/NFS4-LinkMap.txt
+        CODE_SIGN_STYLE: Automatic
+    dependencies:
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: GameController.framework
+      - sdk: AudioToolbox.framework
+      - sdk: AVFoundation.framework
+      - sdk: UniformTypeIdentifiers.framework

@@ -1,0 +1,48 @@
+build/
+DerivedData/
+NFS4.xcodeproj/
+Support/Info.plist
+Payload/
+*.ipa
+__pycache__/
+.DS_Store
+# original game data is never committed
+gamedata/
+NFS4Data/
+dist/
+
+# recompiler outputs derived from the game binaries (never committed)
+recomp/gen/
+recomp/build/
+recomp/run/
+recomp/tests/build/
+recomp/missing_seeds.txt
+ios/build/
+
+# Local source copies, evidence, caches and game files
+game/
+save/
+mods/
+tmp/
+logs/
+.zig-cache/
+.cache/
+device-logs/
+
+# Public source repository: private inputs and local records stay on this PC.
+.python-deps/
+secrets/
+binaries/*
+!binaries/README.md
+ci-output/
+*.ipa.aes
+recompilation.log
+build.log
+tools/games.json
+tools/survey_nfs4.py
+recomp/check_flags_across_calls.py
+docs/*
+!docs/controls.md
+!docs/install.md
+!docs/building.md
+!docs/imports.md

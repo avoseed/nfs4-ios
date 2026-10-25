@@ -1,0 +1,85 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      NFS4_BUILD_KEY: ${{ secrets.NFS4_BUILD_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-recompiler.txt
+
+      - name: Version
+        run: |
+          v=$(tr -d '[:space:]' < APP_VERSION)
+          echo "APP_VERSION=$v" >> "$GITHUB_ENV"
+          echo "APP_BUILD=${{ github.run_number }}" >> "$GITHUB_ENV"
+          echo "IPA_NAME=NFS4-$v-b${{ github.run_number }}" >> "$GITHUB_ENV"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install -r requirements-recompiler.txt
+          command -v xcodegen >/dev/null || brew install xcodegen
+
+      - name: Restore owner-provided inputs
+        run: python3 -B tools/ci_crypto.py restore-inputs
+
+      - name: Recompile and build arm64 library
+        run: |
+          python3 -B ios/build_lib.py > recompilation.log 2>&1 || { echo "Library build failed; see encrypted diagnostics."; exit 1; }
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build unsigned app
+        run: |
+          xcodebuild -version
+          xcodebuild \
+            -project NFS4.xcodeproj \
+            -scheme NFS4 \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            MARKETING_VERSION="$APP_VERSION" CURRENT_PROJECT_VERSION="$APP_BUILD" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build > build.log 2>&1 || { echo "App build failed; see encrypted diagnostics."; exit 1; }
+          test -f build/Build/Products/Release-iphoneos/NFS4.app/NFS4
+
+      - name: Package and encrypt IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/NFS4.app Payload/
+          zip -qry "$IPA_NAME.ipa" Payload
+          python3 -B tools/ci_crypto.py encrypt "$IPA_NAME.ipa" "$IPA_NAME.ipa.aes"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.IPA_NAME }}-encrypted
+          path: ${{ env.IPA_NAME }}.ipa.aes
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Encrypt available diagnostics and link map
+        if: always()
+        run: python3 -B tools/ci_crypto.py diagnostics
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: NFS4-build-${{ github.run_number }}-diagnostics-encrypted
+          path: ci-output/*.aes
+          if-no-files-found: ignore
+          retention-days: 14

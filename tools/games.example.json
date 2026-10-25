@@ -1,0 +1,10 @@
+{
+  "NFS4": {
+    "path": "../game",
+    "include": [
+      "*"
+    ],
+    "exclude": [],
+    "lite_exclude": []
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "nfs4.exe": {
+    "size": 1984512,
+    "sha256": "17a0f96c3bcfb94fc72d31a429ef56e14ec028e4a6ed1f692cdd8efc0b762980"
+  },
+  "voodoo2a.dll": {
+    "size": 110592,
+    "sha256": "77b7d9d18f1b57a28ea848a06c7e4b14a6f186d61d5565c183ebc328810bf895"
+  },
+  "eacsnd.dll": {
+    "size": 47616,
+    "sha256": "b23b61b85b3ad6b1d3f449e13a882585c254f271367bce5f932402163c9a358b"
+  }
+}
