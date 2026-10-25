@@ -3,6 +3,10 @@ name: Build IPA
 on:
   workflow_dispatch:
 
+concurrency:
+  group: nfs4-ios-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
