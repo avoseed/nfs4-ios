@@ -41,9 +41,23 @@ int main(void) {
     for(unsigned i=0;i<256*256;i++) assert(RD16(mirror+i*2)==(uint16_t)i);
     for(unsigned i=0;i<64;i++) assert(MEM[mirror+256*256*2+i]==0xA5);
     for(unsigned i=0;i<256*256;i++) WR16(mirror+i*2,0x8000|0x1234);
-    uint32_t dynamic=hle_car_texture_upload(mirror,10,10,0,0xB);assert(dynamic);
-    for(unsigned i=0;i<1024*1024;i++)assert(RD16(dynamic+i*2)==(0x8000|0x1234));
-    guest_free(dynamic);
+    const uint8_t *dynamic=hle_car_texture_upload(mirror,10,10,0,0xB);assert(dynamic);
+    for(unsigned i=0;i<1024*1024;i++)assert((dynamic[i*2]|(dynamic[i*2+1]<<8))==(0x8000|0x1234));
+    assert(hle_car_texture_upload(mirror,10,10,0,0xB)==dynamic);
+    WR16(mirror,0xFFFF);
+    const uint8_t *changed=hle_car_texture_upload(mirror,10,10,0,0xB);
+    assert(changed && (changed[0]!=0x34 || changed[1]!=0x92));
+    assert(changed[(1024*1024-1)*2]==0x34 && changed[(1024*1024-1)*2+1]==0x92);
+    /* A third mirror evicts one of the two bounded entries; revisiting the
+     * first source must reconstruct its own bytes, not another car's cache. */
+    for(unsigned j=0;j<2;j++) {
+        uint32_t other=mirror+0x40000*(j+1);
+        hle_car_texture_copy(pixels,other,1024*1024*2,1024);
+        for(unsigned i=0;i<256*256;i++)WR16(other+i*2,0xABCD+j);
+        assert(hle_car_texture_upload(other,10,10,0,0xB));
+    }
+    dynamic=hle_car_texture_upload(mirror,10,10,0,0xB);
+    assert(dynamic[(1024*1024-1)*2]==0x34 && dynamic[(1024*1024-1)*2+1]==0x92);
     assert(!hle_car_texture_upload(mirror+4,10,10,0,0xB));
     assert(!hle_car_texture_upload(mirror,8,10,0,0xB));
     WR32(stack+12,0);WR16(src+12,255);data=src;limit=256;

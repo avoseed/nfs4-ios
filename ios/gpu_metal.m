@@ -37,13 +37,15 @@ static int setupDone, setupOk, firstFrame;
 
 static pthread_mutex_t displayLock = PTHREAD_MUTEX_INITIALIZER;
 static id<MTLTexture> displayTex;
+static uint64_t displaySerial;
 
 #define MAXTEX 4096
 static id<MTLTexture> texs[MAXTEX];
 
-id<MTLTexture> gpu_metal_display_texture(void) {
+id<MTLTexture> gpu_metal_display_texture(uint64_t *serial) {
     pthread_mutex_lock(&displayLock);
     id<MTLTexture> t = displayTex;
+    *serial = displaySerial;
     pthread_mutex_unlock(&displayLock);
     return t;
 }
@@ -118,10 +120,10 @@ int gpu_init(int w, int h) {
     return 1;
 }
 
-int gpu_texture_create(int w, int h) {
+int gpu_texture_create(int w, int h, int mipmapped) {
     for (int i = 0; i < MAXTEX; i++) {
         if (texs[i]) continue;
-        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:w height:h mipmapped:YES];
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:w height:h mipmapped:mipmapped];
         td.usage = MTLTextureUsageShaderRead;
         texs[i] = [dev newTextureWithDescriptor:td];
         return texs[i] ? i : -1;
@@ -284,6 +286,7 @@ void gpu_swap(void) {
     [cmd addCompletedHandler:^(id<MTLCommandBuffer> b) {
         pthread_mutex_lock(&displayLock);
         displayTex = done;
+        displaySerial++;
         pthread_mutex_unlock(&displayLock);
         dispatch_semaphore_signal(sem);
     }];

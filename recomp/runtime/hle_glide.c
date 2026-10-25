@@ -62,7 +62,7 @@ static uint32_t g_tris, g_lfb_locks;
 
 /* GPU path (see gpu.h): batches of window-space triangles with a state snapshot */
 #include "gpu.h"
-static int g_gpu;
+static int g_gpu, g_profile;
 #define BATCH_MAX (3 * 8192)
 static GpuVertex g_batch[BATCH_MAX];
 static int g_nbatch;
@@ -367,10 +367,34 @@ static void shade_pixel(int x, int y, float z, float oow, float sow, float tow, 
 /* ---------------------------------------------------------------- GPU path */
 
 /* decoded texture cache keyed by TMU address + format; downloads invalidate overlaps */
-typedef struct { uint32_t addr, bytes; int format, large_lod, aspect; uint32_t pal; int id, w, h, stale; } TexEntry;
+typedef struct { uint32_t addr, bytes; int format, large_lod, aspect; uint32_t pal; int id, w, h, stale; uint32_t gpu_bytes; uint64_t used; } TexEntry;
 #define TEXCACHE 2048
 static TexEntry g_texcache[TEXCACHE];
 static int g_ntex;
+#define GPU_TEXTURE_BUDGET (64u << 20)
+static uint32_t g_gpu_texture_bytes;
+static uint64_t g_tex_clock;
+static void gpu_flush(void);
+static uint32_t texture_bytes(int w,int h) {
+    uint32_t n=0;
+    for(;;) { n+=(uint32_t)w*h*4; if(w==1 && h==1)return n; if(w>1)w>>=1; if(h>1)h>>=1; }
+}
+static void release_texture(TexEntry *e) {
+    if(e->id>=0) { gpu_texture_destroy(e->id); g_gpu_texture_bytes-=e->gpu_bytes; }
+    e->id=-1;e->gpu_bytes=0;e->stale=1;
+}
+static void make_texture_room(uint32_t bytes,TexEntry *keep) {
+    while(g_gpu_texture_bytes+bytes>GPU_TEXTURE_BUDGET) {
+        TexEntry *victim=NULL;
+        for(int i=0;i<g_ntex;i++) {
+            TexEntry *x=&g_texcache[i];
+            if(x==keep || x->id<0)continue;
+            if(!victim || x->stale>victim->stale || (x->stale==victim->stale && x->used<victim->used))victim=x;
+        }
+        if(!victim)break;
+        gpu_flush();release_texture(victim);
+    }
+}
 
 static void tex_invalidate(uint32_t a, uint32_t n) {
     for (int i = 0; i < g_ntex; i++)
@@ -388,8 +412,9 @@ static int gpu_tex_id(void) {
     if (g_last_tex >= 0 && g_last_tex < g_ntex) {
         TexEntry *x = &g_texcache[g_last_tex];
         if (x->addr == t->addr && x->format == t->format && x->large_lod == t->large_lod && x->aspect == t->aspect &&
-            !x->stale && x->pal == pal)
-            return x->id;
+            !x->stale && x->pal == pal) {
+            x->used=++g_tex_clock; return x->id;
+        }
     }
     TexEntry *e = NULL;
     for (int i = 0; i < g_ntex; i++) {
@@ -399,18 +424,25 @@ static int gpu_tex_id(void) {
             break;
         }
     }
-    if (e && !e->stale && e->pal == pal) { g_last_tex = (int)(e - g_texcache); return e->id; }
+    if (e && !e->stale && e->pal == pal) { e->used=++g_tex_clock; g_last_tex = (int)(e - g_texcache); return e->id; }
     if (!e) {
         if (g_ntex >= TEXCACHE) {                         /* full: drop everything */
-            for (int i = 0; i < g_ntex; i++) gpu_texture_destroy(g_texcache[i].id);
-            g_ntex = 0;
+            gpu_flush();
+            for (int i = 0; i < g_ntex; i++) release_texture(&g_texcache[i]);
+            g_ntex = 0; g_last_tex=-1;
         }
         e = &g_texcache[g_ntex++];
         memset(e, 0, sizeof *e);
         e->id = -1;
     }
-    if (e->id >= 0 && (e->w != t->w || e->h != t->h)) { gpu_texture_destroy(e->id); e->id = -1; }
-    if (e->id < 0) e->id = gpu_texture_create(t->w, t->h);
+    if (e->id >= 0 && (e->w != t->w || e->h != t->h)) { gpu_flush(); release_texture(e); }
+    if (e->id < 0) {
+        uint32_t bytes=texture_bytes(t->w,t->h);
+        make_texture_room(bytes,e);
+        e->id=gpu_texture_create(t->w,t->h,1);
+        if(e->id>=0) { e->gpu_bytes=bytes; g_gpu_texture_bytes+=bytes; }
+    }
+    e->used=++g_tex_clock;
     e->addr = t->addr; e->format = t->format; e->large_lod = t->large_lod; e->aspect = t->aspect;
     e->w = t->w; e->h = t->h; e->pal = pal; e->stale = 0;
     e->bytes = tex_mem_required(t->small_lod, t->large_lod, t->aspect, t->format);
@@ -525,7 +557,7 @@ static void update_tex_usage(void) {
 #define GF(name) static void name(Cpu *c)
 static float argf(Cpu *c, int i) { uint32_t v = ARG(i); float f; memcpy(&f, &v, 4); return f; }
 
-GF(grGlideInit) { plat_log("glide: grGlideInit"); RETURN(0, 0); }
+GF(grGlideInit) { g_profile = getenv("NFS4_PROFILE") != NULL; plat_log("glide: grGlideInit"); RETURN(0, 0); }
 GF(grGlideShutdown) { RETURN(0, 0); }
 GF(grSstSelect) { RETURN(1, 0); }
 GF(grErrorSetCallback) { g_err_cb = ARG(0); RETURN(1, 0); }
@@ -596,7 +628,7 @@ static void gpu_clear_rect(uint32_t rgba, float depth, int with_depth) {
 /* GPU path: framebuffer writes through the LFB become a textured quad over the changed pixels */
 static void gpu_lfb_blit(const uint32_t *rgba) {
     static int id = -1, tw, th;
-    if (id < 0 || tw != W || th != H) { if (id >= 0) gpu_texture_destroy(id); id = gpu_texture_create(W, H); tw = W; th = H; }
+    if (id < 0 || tw != W || th != H) { if (id >= 0) gpu_texture_destroy(id); id = gpu_texture_create(W, H, 0); tw = W; th = H; }
     gpu_texture_upload(id, rgba);
     gpu_flush();
     GpuState s;
@@ -897,8 +929,9 @@ GF(grBufferSwap) {
     if (++g_frames % 300 == 0) {
         uint64_t now = plat_ticks_us();
         double secs = g_swap_t0 ? (now - g_swap_t0) / 1e6 : 0;
-        plat_log("glide: %d frames, %.1f fps, raster %.1f ms/frame, %u tris/frame, %s", g_frames, secs > 0 ? 300 / secs : 0,
-                 g_raster_us / 1000.0 / 300, g_tris / 300, hle_glide_in_menu() ? "menu" : "race");
+        if(g_profile) plat_log("glide: %d frames, %.1f fps, raster %.1f ms/frame, %u tris/frame, %s, GPU textures %.1f MiB", g_frames, secs > 0 ? 300 / secs : 0,
+                 g_raster_us / 1000.0 / 300, g_tris / 300, hle_glide_in_menu() ? "menu" : "race",g_gpu_texture_bytes/1048576.0);
+        else plat_log("glide: %d frames, %.1f fps, %u tris/frame, %s, GPU textures %.1f MiB",g_frames,secs>0?300/secs:0,g_tris/300,hle_glide_in_menu()?"menu":"race",g_gpu_texture_bytes/1048576.0);
         plat_log("glide:   lfb locks %u in last 300 frames", g_lfb_locks);
         g_swap_t0 = now; g_raster_us = 0; g_tris = 0; g_lfb_locks = 0;
     }
@@ -906,9 +939,9 @@ GF(grBufferSwap) {
 }
 
 GF(grDrawTriangle) {
-    uint64_t t0 = plat_ticks_us();
+    uint64_t t0 = g_profile ? plat_ticks_us() : 0;
     draw_triangle(read_vertex(ARG(0)), read_vertex(ARG(1)), read_vertex(ARG(2)));
-    g_raster_us += plat_ticks_us() - t0;
+    if (g_profile) g_raster_us += plat_ticks_us() - t0;
     g_tris++;
     RETURN(3, 0);
 }
@@ -975,10 +1008,13 @@ GF(grTexDownloadMipMap) {
         tex_dims(large, aspect, &w, &h);
         if (logged++ < 8) plat_log("glide: huge texture %dx%d format %X at %08X", w, h, fmt, start);
     }
-    uint32_t mirror = hle_car_texture_upload(data, small, large, aspect, fmt);
-    if (start + n <= TMU_SIZE) memcpy(g_tmu + start, MEM + (mirror ? mirror : data), n);
-    if (mirror) guest_free(mirror);
-    if (g_gpu) { gpu_flush(); tex_invalidate(start, n); }
+    const uint8_t *mirror = hle_car_texture_upload(data, small, large, aspect, fmt);
+    const uint8_t *source = mirror ? mirror : MEM + data;
+    if (start <= TMU_SIZE && n <= TMU_SIZE-start && memcmp(g_tmu+start,source,n)) {
+        if (g_gpu) gpu_flush();
+        memcpy(g_tmu+start,source,n);
+        if (g_gpu) tex_invalidate(start,n);
+    }
     RETURN(4, 0);
 }
 GF(grTexDownloadMipMapLevelPartial) {
@@ -997,15 +1033,24 @@ GF(grTexDownloadMipMapLevelPartial) {
     }
     uint32_t stride = (uint32_t)(w * tex_bpp(fmt));
     uint32_t dst = start + off + (uint32_t)row0 * stride, n = (uint32_t)(row1 - row0 + 1) * stride;
-    if (dst + n <= TMU_SIZE) memcpy(g_tmu + dst, MEM + data, n);
-    if (g_gpu) { gpu_flush(); tex_invalidate(dst, n); }
+    if (dst <= TMU_SIZE && n <= TMU_SIZE-dst && memcmp(g_tmu+dst,MEM+data,n)) {
+        if (g_gpu) gpu_flush();
+        memcpy(g_tmu+dst,MEM+data,n);
+        if (g_gpu) tex_invalidate(dst,n);
+    }
     RETURN(10, 0);
 }
 GF(grTexDownloadTable) {
     uint32_t type = ARG(0), data = ARG(1);
-    if (type == 2 || type == 3) for (int i = 0; i < 256; i++) g_palette[i] = RD32(data + 4 * i);
-    if (g_gpu) gpu_flush();
-    g_palette_serial++;
+    if (type == 2 || type == 3) {
+        int changed=0;
+        for(int i=0;i<256;i++) if(g_palette[i]!=RD32(data+4*i)) { changed=1; break; }
+        if(changed) {
+            if(g_gpu)gpu_flush();
+            for(int i=0;i<256;i++)g_palette[i]=RD32(data+4*i);
+            g_palette_serial++;
+        }
+    }
     RETURN(2, 0);
 }
 GF(grTexSource) {

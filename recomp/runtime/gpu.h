@@ -38,7 +38,7 @@ typedef struct {
 } GpuState;
 
 int gpu_init(int w, int h);                       /* (re)open at Glide resolution; 0 = not available */
-int gpu_texture_create(int w, int h);
+int gpu_texture_create(int w, int h, int mipmapped);
 void gpu_texture_upload(int id, const uint32_t *rgba);    /* full level 0; backend builds mips */
 void gpu_texture_destroy(int id);
 void gpu_draw(const GpuState *s, const GpuVertex *v, int nverts);

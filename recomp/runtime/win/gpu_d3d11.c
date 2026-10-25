@@ -31,7 +31,7 @@ static uint32_t *frame;
 
 #define VBUF_VERTS (3 * 8192)
 #define MAXTEX 4096
-static struct { ID3D11Texture2D *t; ID3D11ShaderResourceView *srv; int w, h; } texs[MAXTEX];
+static struct { ID3D11Texture2D *t; ID3D11ShaderResourceView *srv; int w, h, mipmapped; } texs[MAXTEX];
 
 typedef HRESULT(WINAPI *PFN_D3DCompile)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO *, ID3DInclude *, LPCSTR, LPCSTR,
                                          UINT, UINT, ID3DBlob **, ID3DBlob **);
@@ -101,14 +101,14 @@ int gpu_init(int w, int h) {
     return 1;
 }
 
-int gpu_texture_create(int w, int h) {
+int gpu_texture_create(int w, int h, int mipmapped) {
     for (int i = 0; i < MAXTEX; i++) {
         if (texs[i].t) continue;
-        D3D11_TEXTURE2D_DESC td = { (UINT)w, (UINT)h, 0, 1, DXGI_FORMAT_R8G8B8A8_UNORM, { 1, 0 }, D3D11_USAGE_DEFAULT,
-                                    D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET, 0, D3D11_RESOURCE_MISC_GENERATE_MIPS };
+        D3D11_TEXTURE2D_DESC td = { (UINT)w, (UINT)h, mipmapped ? 0u : 1u, 1, DXGI_FORMAT_R8G8B8A8_UNORM, { 1, 0 }, D3D11_USAGE_DEFAULT,
+                                    D3D11_BIND_SHADER_RESOURCE | (mipmapped ? D3D11_BIND_RENDER_TARGET : 0), 0, mipmapped ? D3D11_RESOURCE_MISC_GENERATE_MIPS : 0 };
         if (FAILED(ID3D11Device_CreateTexture2D(dev, &td, NULL, &texs[i].t))) return -1;
         ID3D11Device_CreateShaderResourceView(dev, (ID3D11Resource *)texs[i].t, NULL, &texs[i].srv);
-        texs[i].w = w; texs[i].h = h;
+        texs[i].w = w; texs[i].h = h; texs[i].mipmapped = mipmapped;
         return i;
     }
     return -1;
@@ -117,7 +117,7 @@ int gpu_texture_create(int w, int h) {
 void gpu_texture_upload(int id, const uint32_t *rgba) {
     if (id < 0 || id >= MAXTEX || !texs[id].t) return;
     ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)texs[id].t, 0, NULL, rgba, (UINT)texs[id].w * 4, 0);
-    ID3D11DeviceContext_GenerateMips(ctx, texs[id].srv);
+    if (texs[id].mipmapped) ID3D11DeviceContext_GenerateMips(ctx, texs[id].srv);
 }
 
 void gpu_texture_destroy(int id) {

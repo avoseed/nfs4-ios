@@ -7,6 +7,8 @@
 #import <AVFoundation/AVFoundation.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <pthread.h>
+#include <stdatomic.h>
+#include "power_policy.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -26,7 +28,7 @@
 #include "rt_host.h"
 
 void hle_key_event(uint8_t sc, int down);
-id<MTLTexture> gpu_metal_display_texture(void);
+id<MTLTexture> gpu_metal_display_texture(uint64_t *serial);
 int g_screen_height_px;            // device height in landscape, used for render upscaling
 int g_msaa_samples = 4;            // in-app setting, read by gpu_metal.m
 static float g_wide_aspect;        // aspect of the area beside the Dynamic Island, 0 = keep 4:3
@@ -128,12 +130,17 @@ void plat_sleep_ms(uint32_t ms) {
 }
 void plat_sleep_us(uint32_t us) { usleep(us); }
 
-// 60 fps, or 30 in the power-saving setting or once iOS reports the phone is getting hot
-static volatile int g_fps_setting = 60;
-int plat_frame_cap(void) {
-    if (NSProcessInfo.processInfo.thermalState >= NSProcessInfoThermalStateSerious) return 30;
-    return g_fps_setting;
+// The game thread only reads an atomic cap. UIKit notifications update power
+// state on the main thread, so no Objective-C thermal query is made per swap.
+static int g_fps_setting = 60, g_thermal_state, g_low_power, g_app_active = 1;
+static atomic_int g_effective_frame_cap = 60;
+static Nfs4PowerPolicy g_power_policy;
+static void update_power_cap(void) {
+    int cap=nfs4_power_cap(&g_power_policy,g_fps_setting,g_thermal_state,g_low_power,g_app_active,plat_ticks_us());
+    int previous=atomic_exchange_explicit(&g_effective_frame_cap,cap,memory_order_relaxed);
+    if(previous!=cap)plat_log("power: %d fps, thermal %d, low power %d, active %d",cap,g_thermal_state,g_low_power,g_app_active);
 }
+int plat_frame_cap(void) { return atomic_load_explicit(&g_effective_frame_cap,memory_order_relaxed); }
 
 void *plat_reserve(size_t size) {
     void *p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
@@ -395,6 +402,8 @@ static NSString *locate_game_dir(void) {
 @property(nonatomic) id<MTLRenderPipelineState> pipeline;
 @property(nonatomic) id<MTLTexture> texture;
 @property(nonatomic) int lastSerial;
+@property(nonatomic) uint64_t lastGPUSerial;
+@property(nonatomic) BOOL hasPresented;
 @property(nonatomic) CGRect gameRect;     // where the 4:3 picture is drawn, in points
 @end
 
@@ -425,13 +434,43 @@ static NSString *const kShader =
     pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
     pd.colorAttachments[0].pixelFormat = self.colorPixelFormat;
     _pipeline = [dev newRenderPipelineStateWithDescriptor:pd error:&err];
+    [self powerStateChanged:nil];
+    NSNotificationCenter *nc=NSNotificationCenter.defaultCenter;
+    for(NSString *name in @[NSProcessInfoThermalStateDidChangeNotification, NSProcessInfoPowerStateDidChangeNotification,
+                           UIApplicationWillResignActiveNotification, UIApplicationDidBecomeActiveNotification]) {
+        [nc addObserver:self selector:@selector(powerStateChanged:) name:name object:nil];
+    }
     return self;
 }
 
-- (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {}
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+
+- (void)powerStateChanged:(NSNotification *)notification {
+    // All observers are created by UIKit on the main thread.
+    if(!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self powerStateChanged:notification]; });
+        return;
+    }
+    g_thermal_state=(int)NSProcessInfo.processInfo.thermalState;
+    g_low_power=NSProcessInfo.processInfo.lowPowerModeEnabled;
+    if([notification.name isEqualToString:UIApplicationWillResignActiveNotification]) {
+        g_app_active=0; self.paused=YES;
+    } else if([notification.name isEqualToString:UIApplicationDidBecomeActiveNotification]) {
+        g_app_active=1; self.paused=NO; _hasPresented=NO;
+    }
+    update_power_cap();
+    self.preferredFramesPerSecond=plat_frame_cap();
+}
+
+- (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size { _hasPresented=NO; }
 
 - (void)drawInMTKView:(MTKView *)view {
-    id<MTLTexture> gpuTex = gpu_metal_display_texture();
+    update_power_cap();
+    int cap=plat_frame_cap();
+    if(view.preferredFramesPerSecond!=cap)view.preferredFramesPerSecond=cap;
+    uint64_t gpuSerial=0;
+    id<MTLTexture> gpuTex = gpu_metal_display_texture(&gpuSerial);
+    if(gpuTex && _hasPresented && _lastGPUSerial==gpuSerial)return;
     pthread_mutex_lock(&g_frame_lock);
     if (!gpuTex && g_frame && g_frame_serial != _lastSerial) {
         if (!_texture || (int)_texture.width != g_fw || (int)_texture.height != g_fh) {
@@ -473,6 +512,7 @@ static NSString *const kShader =
     [enc endEncoding];
     [cb presentDrawable:drawable];
     [cb commit];
+    _lastGPUSerial=gpuSerial; _hasPresented=YES;
 }
 
 // a tap on the picture becomes a mouse click at the corresponding game position
@@ -817,6 +857,7 @@ static BOOL import_incomplete(void) {
     g_wide_aspect = [d boolForKey:@"wide"] && h > 0 ? (float)(w / h) : 0;
     g_msaa_samples = [d boolForKey:@"msaa"] ? 4 : 1;
     g_fps_setting = [d boolForKey:@"fps30"] ? 30 : 60;
+    update_power_cap();
     plat_log("display: %.0fx%.0f pt, usable aspect %.3f, wide %s, MSAA %dx, %d fps", s.width, s.height, w / h,
              g_wide_aspect > 0 ? "on" : "off", g_msaa_samples, g_fps_setting);
 }
@@ -824,7 +865,7 @@ static BOOL import_incomplete(void) {
 - (void)showSettings {
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     UIAlertController *a = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"설정 · NFS4 %@", app_version()]
-        message:@"화면비·안티에일리어싱은 다음 실행부터 적용됩니다.\n와이드: 레이스를 최대 16:9로 넓게 렌더링 (메뉴는 원본 4:3)" preferredStyle:UIAlertControllerStyleActionSheet];
+        message:@"화면비·안티에일리어싱은 다음 실행부터 적용됩니다.\n와이드: 레이스 최대 16:9 (메뉴 4:3)\n발열·저전력 모드에서는 자동 프레임 제한, 식은 뒤 선택한 설정으로 복귀" preferredStyle:UIAlertControllerStyleActionSheet];
     BOOL wide = [d boolForKey:@"wide"], msaa = [d boolForKey:@"msaa"];
     [a addAction:[UIAlertAction actionWithTitle:wide ? @"화면비: 와이드 ✓ → 원본 4:3로" : @"화면비: 원본 4:3 ✓ → 와이드로"
         style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { [d setBool:!wide forKey:@"wide"]; }]];
@@ -835,6 +876,7 @@ static BOOL import_incomplete(void) {
         style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
             [d setBool:!fps30 forKey:@"fps30"];
             g_fps_setting = fps30 ? 60 : 30;
+            update_power_cap();
         }]];
     [a addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"버튼 투명도 (지금 %.0f%%)", [self overlayAlpha] * 100]
         style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { [self askOverlayAlpha]; }]];

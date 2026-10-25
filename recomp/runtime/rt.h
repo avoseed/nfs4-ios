@@ -228,4 +228,5 @@ int hle_glide_wide_mode(uint32_t width, uint32_t height);
 uint32_t hle_car_texture_begin(uint32_t *data, uint32_t *limit, uint32_t reuse, uint32_t stack);
 void hle_car_texture_end(uint32_t scratch, uint32_t texture, uint32_t side);
 void hle_car_texture_copy(uint32_t src, uint32_t dst, uint32_t bytes, uint32_t side);
-uint32_t hle_car_texture_upload(uint32_t data, int small, int large, int aspect, int fmt);
+/* Borrowed cached bytes: consumed synchronously by the calling Glide upload. */
+const uint8_t *hle_car_texture_upload(uint32_t data, int small, int large, int aspect, int fmt);

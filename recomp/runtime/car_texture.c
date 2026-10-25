@@ -23,6 +23,32 @@ static float cubic(float x) {
 static unsigned bounded(int x, unsigned n) { return x < 0 ? 0 : (unsigned)x >= n ? n-1 : (unsigned)x; }
 static uint8_t channel(float x) { return x < 0 ? 0 : x > 255 ? 255 : (uint8_t)(x + .5f); }
 
+/* Both paths resample 256px square art. Calculate the identical cubic taps once
+ * per output size instead of evaluating the polynomial for every channel/pixel. */
+typedef struct { unsigned index[4], nearest; float weight[4]; } ResampleTap;
+static ResampleTap taps[2048];
+static unsigned tap_side;
+static const ResampleTap *resample_taps(unsigned side) {
+    if (tap_side != side) {
+        for(unsigned x=0;x<side;x++) {
+            float u=(x+.5f)*256/side-.5f; int ix=(int)floorf(u);
+            for(int k=-1;k<=2;k++) {
+                taps[x].index[k+1]=bounded(ix+k,256);
+                taps[x].weight[k+1]=cubic(u-ix-k);
+            }
+            taps[x].nearest=x*256/side;
+        }
+        tap_side=side;
+    }
+    return taps;
+}
+/* Two live damage/cockpit mirrors: 4.25 MiB at the default 1024px. Cache the
+ * complete 128 KiB source, so equal bytes are required before skipping work. */
+typedef struct { uint32_t address; unsigned side; uint64_t used; uint8_t *source, *pixels; } MirrorCache;
+static MirrorCache mirror_cache[2];
+static uint64_t mirror_use;
+
+
 uint32_t hle_car_texture_begin(uint32_t *data, uint32_t *limit, uint32_t reuse, uint32_t stack) {
     if (getenv("NFS4_TRACE_TEXTURES")) {
         static unsigned logged;
@@ -48,20 +74,21 @@ uint32_t hle_car_texture_begin(uint32_t *data, uint32_t *limit, uint32_t reuse, 
     WR16(scratch+12, side); WR16(scratch+14, side);
     const uint8_t *in = MEM+src+header;
     uint8_t *out = MEM+scratch+header;
+    const ResampleTap *axis=resample_taps(side);
     for (unsigned y=0; y<h; y++) for (unsigned x=0; x<side; x++) {
-        float u=(x+.5f)*w/side-.5f; int ix=(int)floorf(u);
+        const ResampleTap *t=&axis[x];
         for (unsigned c=0;c<3;c++) {
             float v=0;
-            for(int k=-1;k<=2;k++) v+=in[(y*w+bounded(ix+k,w))*4+c]*cubic(u-ix-k);
+            for(int k=0;k<4;k++) v+=in[(y*w+t->index[k])*4+c]*t->weight[k];
             rows[(y*side+x)*3+c]=v;
         }
     }
     for (unsigned y=0; y<side; y++) {
-        float v=(y+.5f)*h/side-.5f; int iy=(int)floorf(v);
+        const ResampleTap *t=&axis[y];
         for (unsigned x=0; x<side; x++) {
             for(unsigned c=0;c<3;c++) {
                 float value=0;
-                for(int k=-1;k<=2;k++) value+=rows[(bounded(iy+k,h)*side+x)*3+c]*cubic(v-iy-k);
+                for(int k=0;k<4;k++) value+=rows[(t->index[k]*side+x)*3+c]*t->weight[k];
                 out[(y*side+x)*4+c]=channel(value);
             }
             out[(y*side+x)*4+3]=in[((y*h/side)*w+x*w/side)*4+3];
@@ -96,38 +123,53 @@ void hle_car_texture_copy(uint32_t src, uint32_t dst, uint32_t bytes, uint32_t s
 
 /* Dynamic damage/reflection uploads still point at the engine's fixed CPU mirror.
  * Reconstruct that mirror before a large Glide upload so it cannot overread it. */
-uint32_t hle_car_texture_upload(uint32_t data, int small, int large, int aspect, int fmt) {
+const uint8_t *hle_car_texture_upload(uint32_t data, int small, int large, int aspect, int fmt) {
     if (fmt != 0xB || aspect || large != small || large < 9 || large > 11) return 0;
     unsigned i;
     for(i=0;i<nmirrors;i++) if(mirror_addresses[i]==data) break;
     if(i==nmirrors) return 0;
     unsigned side=1u<<large;
-    uint32_t scratch=guest_alloc(side*side*2);
+    MirrorCache *cache=NULL;
+    for(unsigned j=0;j<2;j++) if(mirror_cache[j].address==data && mirror_cache[j].side==side) { cache=&mirror_cache[j]; break; }
+    if(cache && !memcmp(cache->source,MEM+data,256*256*2)) { cache->used=++mirror_use; return cache->pixels; }
+    if(!cache) {
+        cache=mirror_cache[0].used<=mirror_cache[1].used ? &mirror_cache[0] : &mirror_cache[1];
+        uint8_t *pixels=realloc(cache->pixels,side*side*2);
+        if(!pixels) plat_fatal("car mirror cache allocation failed");
+        cache->pixels=pixels;
+        if(!cache->source)cache->source=malloc(256*256*2);
+        if(!cache->source)plat_fatal("car mirror source allocation failed");
+        cache->address=data;cache->side=side;
+    }
     float *rows=malloc((size_t)side*256*3*sizeof(float));
-    if (!scratch || !rows) { free(rows); if(scratch)guest_free(scratch); plat_fatal("car mirror reconstruction allocation failed"); }
+    if (!rows) plat_fatal("car mirror reconstruction allocation failed");
+    const ResampleTap *axis=resample_taps(side);
     for(unsigned y=0;y<256;y++) for(unsigned x=0;x<side;x++) {
-        float u=(x+.5f)*256/side-.5f;int ix=(int)floorf(u);
+        const ResampleTap *t=&axis[x];
         for(unsigned c=0;c<3;c++) {
             float v=0;
-            for(int k=-1;k<=2;k++) v+=((RD16(data+(y*256+bounded(ix+k,256))*2)>>(c*5))&31)*cubic(u-ix-k);
+            for(int k=0;k<4;k++) v+=((RD16(data+(y*256+t->index[k])*2)>>(c*5))&31)*t->weight[k];
             rows[(y*side+x)*3+c]=v;
         }
     }
     for(unsigned y=0;y<side;y++) {
-        float v=(y+.5f)*256/side-.5f;int iy=(int)floorf(v);
+        const ResampleTap *t=&axis[y];
         for(unsigned x=0;x<side;x++) {
             unsigned pixel=RD16(data+((y*256/side)*256+x*256/side)*2)&0x8000;
             for(unsigned c=0;c<3;c++) {
                 float value=0;
-                for(int k=-1;k<=2;k++)value+=rows[(bounded(iy+k,256)*side+x)*3+c]*cubic(v-iy-k);
+                for(int k=0;k<4;k++)value+=rows[(t->index[k]*side+x)*3+c]*t->weight[k];
                 unsigned q=value<0?0:value>31?31:(unsigned)(value+.5f);
                 pixel|=q<<(c*5);
             }
-            WR16(scratch+(y*side+x)*2,pixel);
+            cache->pixels[(y*side+x)*2]=(uint8_t)pixel;
+            cache->pixels[(y*side+x)*2+1]=(uint8_t)(pixel>>8);
         }
     }
     free(rows);
     static unsigned logged;
     if(logged++<4)plat_log("car texture: dynamic 256px mirror -> %upx upload",side);
-    return scratch;
+    memcpy(cache->source,MEM+data,256*256*2);
+    cache->used=++mirror_use;
+    return cache->pixels;
 }
