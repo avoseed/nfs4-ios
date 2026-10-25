@@ -2,12 +2,12 @@
 #include <assert.h>
 uint8_t *MEM;
 int g_screen_w,g_screen_h;
-static int destroys,draws,last_destroy;
+static int destroys,draws,last_destroy,unknown_logs;
 void gpu_texture_destroy(int id){destroys++;last_destroy=id;}
 void gpu_draw(const GpuState *s,const GpuVertex *v,int n){(void)s;(void)v;assert(n==3);draws++;}
 const uint8_t *hle_car_texture_upload(uint32_t d,int s,int l,int a,int f){(void)d;(void)s;(void)l;(void)a;(void)f;return NULL;}
 /* Unused platform entry points fail if this focused cache test reaches them. */
-void plat_log(const char *fmt,...) {(void)fmt;}
+void plat_log(const char *fmt,...) {if(!strncmp(fmt,"glide: grGet(",13))unknown_logs++;}
 float plat_wide_aspect(void){abort();}
 uint64_t plat_ticks_us(void){abort();}
 uint32_t guest_strdup(const char *s){(void)s;abort();}
@@ -47,5 +47,6 @@ int main(void){
  args(&c,2,data);grTexDownloadTable(&c);uint32_t serial=g_palette_serial;
  g_nbatch=3;previous=draws;args(&c,2,data);grTexDownloadTable(&c);
  assert(serial==g_palette_serial && previous==draws && g_nbatch==3);
+ for(int i=0;i<1000;i++){c.esp=16;WR32(20,0x99);WR32(24,4);WR32(28,data);grGet(&c);}assert(unknown_logs==1);
  free(MEM);puts("texture_cache: byte budget, stale/LRU eviction, queued draw flush, identical texture/palette skips passed");return 0;
 }

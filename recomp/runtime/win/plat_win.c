@@ -8,6 +8,7 @@
 #include <direct.h>
 #include <io.h>
 #include "../plat.h"
+#include "../power_policy.h"
 #include "../rt_host.h"
 
 static FILE *g_log;
@@ -211,7 +212,7 @@ void plat_present(const uint32_t *rgba, int w, int h) {
 
 int plat_pump(void) { return !g_closed; }
 float plat_wide_aspect(void) { const char *e = getenv("NFS4_WIDE"); return e ? (float)atof(e) : 0; }
-int plat_frame_cap(void) { const char *e = getenv("NFS4_FPS"); return e ? atoi(e) : 60; }
+int plat_frame_cap(void) { const char *e = getenv("NFS4_FPS"); return nfs4_scene_cap(e ? atoi(e) : 60,hle_glide_in_menu()); }
 
 /* Scripted input for unattended testing: NFS4_KEYS="3:1C,5.5:D0,..." presses DIK scan code
  * (hex) at t seconds for 150 ms. NFS4_SHOTS=<seconds> saves shot_NNN.bmp at that interval. */

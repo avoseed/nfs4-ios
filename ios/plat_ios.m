@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include "power_policy.h"
+#include "log_sink.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -38,7 +39,8 @@ void hle_audio_mix(float *out, int frames, int rate);
 
 volatile uint8_t plat_keys[256];
 static char g_game[1024], g_save[1024];
-static FILE *g_log;
+static Nfs4LogSink g_log;
+static int g_console_logging;
 static pthread_mutex_t g_log_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // ---------------------------------------------------------------- logging / time
@@ -50,9 +52,9 @@ void plat_log(const char *fmt, ...) {
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
     pthread_mutex_lock(&g_log_lock);
-    if (g_log) { fprintf(g_log, "%s\n", buf); fflush(g_log); }
+    nfs4_log_append(&g_log,buf,4u<<20);
     pthread_mutex_unlock(&g_log_lock);
-    NSLog(@"%s", buf);
+    if(g_console_logging || !strncmp(buf,"FATAL:",6) || !strncmp(buf,"CRASH:",6))NSLog(@"%s",buf);
 }
 
 void plat_fatal(const char *fmt, ...) {
@@ -137,6 +139,7 @@ static atomic_int g_effective_frame_cap = 60;
 static Nfs4PowerPolicy g_power_policy;
 static void update_power_cap(void) {
     int cap=nfs4_power_cap(&g_power_policy,g_fps_setting,g_thermal_state,g_low_power,g_app_active,plat_ticks_us());
+    cap=nfs4_scene_cap(cap,hle_glide_in_menu());
     int previous=atomic_exchange_explicit(&g_effective_frame_cap,cap,memory_order_relaxed);
     if(previous!=cap)plat_log("power: %d fps, thermal %d, low power %d, active %d",cap,g_thermal_state,g_low_power,g_app_active);
 }
@@ -1342,10 +1345,17 @@ static BOOL append_file(NSString *from, NSString *to) {
     snprintf(logp, sizeof logp, "%s/nfs4host.log", g_save);
     snprintf(prevp, sizeof prevp, "%s/nfs4host.prev.log", g_save);
     rename(logp, prevp);                       // keep the last session's log, e.g. after a crash
-    g_log = fopen(logp, "w");
+    snprintf(g_log.current,sizeof g_log.current,"%s",logp);
+    snprintf(g_log.segment,sizeof g_log.segment,"%s/nfs4host.segment.log",g_save);
+    g_log.file=fopen(logp,"w");g_log.bytes=0;
+    g_console_logging=getenv("NFS4_CONSOLE_LOG")!=NULL;
+#if DEBUG
+    g_console_logging=1;
+#endif
     install_crash_handlers();
     plat_log("NFS4 %s, game folder: %s", app_version().UTF8String, g_game);
     [self applySettings];
+    plat_log("power: initial %d fps, thermal %d, low power %d, active %d",plat_frame_cap(),g_thermal_state,g_low_power,g_app_active);
 
     _gameView = [[GameView alloc] initWithFrame:self.view.bounds];
     _gameView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;

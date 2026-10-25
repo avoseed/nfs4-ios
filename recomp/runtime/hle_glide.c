@@ -912,6 +912,7 @@ static void pace_swap(void) {
     int cap = plat_frame_cap();
     if (cap <= 0) return;
     uint64_t period = 1000000 / (uint64_t)cap, now = plat_ticks_us();
+    if(!g_swap_t0)g_swap_t0=now;
     if (g_next_swap > now + period) g_next_swap = now;          /* first frame, or the cap was raised */
     if (now < g_next_swap) plat_sleep_us((uint32_t)(g_next_swap - now));
     else if (now - g_next_swap > 2 * period) g_next_swap = now; /* far behind: restart the schedule */
@@ -929,9 +930,9 @@ GF(grBufferSwap) {
     if (++g_frames % 300 == 0) {
         uint64_t now = plat_ticks_us();
         double secs = g_swap_t0 ? (now - g_swap_t0) / 1e6 : 0;
-        if(g_profile) plat_log("glide: %d frames, %.1f fps, raster %.1f ms/frame, %u tris/frame, %s, GPU textures %.1f MiB", g_frames, secs > 0 ? 300 / secs : 0,
+        if(g_profile) plat_log("glide: %d frames, %.1f fps, frame %.2f ms, raster %.1f ms/frame, %u tris/frame, %s, GPU textures %.1f MiB", g_frames, secs > 0 ? 300 / secs : 0,secs*1000/300,
                  g_raster_us / 1000.0 / 300, g_tris / 300, hle_glide_in_menu() ? "menu" : "race",g_gpu_texture_bytes/1048576.0);
-        else plat_log("glide: %d frames, %.1f fps, %u tris/frame, %s, GPU textures %.1f MiB",g_frames,secs>0?300/secs:0,g_tris/300,hle_glide_in_menu()?"menu":"race",g_gpu_texture_bytes/1048576.0);
+        else plat_log("glide: %d frames, %.1f fps, frame %.2f ms, %u tris/frame, %s, GPU textures %.1f MiB",g_frames,secs>0?300/secs:0,secs*1000/300,g_tris/300,hle_glide_in_menu()?"menu":"race",g_gpu_texture_bytes/1048576.0);
         plat_log("glide:   lfb locks %u in last 300 frames", g_lfb_locks);
         g_swap_t0 = now; g_raster_us = 0; g_tris = 0; g_lfb_locks = 0;
     }
@@ -1091,7 +1092,11 @@ static uint32_t from555(uint16_t p) {
 
 GF(grLfbLock) {
     g_lfb_locks++;
-    if (g_lfb_locks < 20) plat_log("glide: grLfbLock(type %X, buffer %u, mode %u, pipeline %u) from %08X", ARG(0), ARG(1), ARG(2), ARG(4), RD32(c->esp));
+    static unsigned lock_logs;
+    if (lock_logs < 8) {
+        lock_logs++;
+        plat_log("glide: grLfbLock(type %X, buffer %u, mode %u, pipeline %u) from %08X", ARG(0), ARG(1), ARG(2), ARG(4), RD32(c->esp));
+    }
     uint32_t type = ARG(0) & 0xF, buffer = ARG(1), mode = ARG(2), info = ARG(5);
     int b = buffer == 0 ? 1 - g_back : buffer == 1 ? g_back : g_render;
     if (mode == 0xFF) mode = 0;   /* ANY -> 565 */

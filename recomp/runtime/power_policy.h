@@ -12,3 +12,6 @@ static inline int nfs4_power_cap(Nfs4PowerPolicy *p, int requested, int thermal,
     if (requested <= 30 || low_power || thermal >= 1 || now_us < p->cool_until_us) return 30;
     return 60;
 }
+
+/* Menus and the rotating pause scene have no need for a 60fps producer. */
+static inline int nfs4_scene_cap(int cap,int menu) { return menu && cap>30?30:cap; }

@@ -1,5 +1,6 @@
 /* GDI32, ADVAPI32, WINMM, OLE32, SHELL32, WSOCK32 replacements (mostly stubs). */
 #include "hle.h"
+#include "timer_policy.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -48,7 +49,7 @@ static void timer_thread(void *p) {
     Cpu *c = rt_new_cpu(0x100000);
     rt_bind_cpu(c);
     for (;;) {
-        uint64_t now = plat_ticks_us(), next = now + 50000;
+        uint64_t now = plat_ticks_us(), next = UINT64_MAX;
         Timer run = { 0 };
         int found = 0;
         plat_mutex_lock(g_tlock);
@@ -74,8 +75,7 @@ static void timer_thread(void *p) {
             rt_guest_call(c, run.cb, 5, a);
             continue;
         }
-        uint64_t wait = next > now ? (next - now) / 1000 : 0;
-        plat_event_wait(g_tev, wait ? (uint32_t)wait : 1);
+        plat_event_wait(g_tev,nfs4_timer_wait_ms(plat_ticks_us(),next));
     }
 }
 
@@ -103,6 +103,7 @@ HLE(timeKillEvent) {
     plat_mutex_lock(g_tlock);
     for (int i = 0; i < MAXTIMERS; i++) if (g_timers[i].alive && g_timers[i].id == ARG(0)) g_timers[i].alive = 0;
     plat_mutex_unlock(g_tlock);
+    plat_event_set(g_tev); /* killing the earliest timer changes the next wait */
     RETURN(1, 0);
 }
 const HleEntry hle_misc_winmm[] = {
