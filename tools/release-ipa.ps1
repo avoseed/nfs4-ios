@@ -1,10 +1,13 @@
 # Downloads an owner-encrypted CI artifact and creates a local installable IPA.
-# It never publishes the decrypted app as a GitHub Release or syncs iCloud.
+# Keeps immutable package history and synchronizes only the latest NFS4 IPA to iCloud.
 param(
     [string]$Repo = 'avoseed/nfs4-ios',
     [string]$App = 'NFS4',
     [string]$Run = '',
-    [string]$Notes = ''
+    [string]$Notes = '',
+    [switch]$SkipICloud,
+    [string]$ArchiveRoot = 'E:\ios-ports\ipa',
+    [string]$CloudTarget = (Join-Path $env:USERPROFILE 'iCloudDrive\iOS 포트 IPA')
 )
 $ErrorActionPreference = 'Stop'
 if ($Repo -ne 'avoseed/nfs4-ios' -or $App -ne 'NFS4') { throw 'Unexpected repository or app.' }
@@ -43,4 +46,9 @@ if (-not (Test-Path -LiteralPath $log)) {
 if (-not (Select-String -LiteralPath $log -SimpleMatch "| $version | $build |" -Quiet)) {
     "| $version | $build | $Run | $Notes |" | Add-Content -LiteralPath $log -Encoding utf8
 }
-[pscustomobject]@{ Version = $version; Build = $build; File = $file; PublicRelease = $false }
+if (-not $SkipICloud) {
+    $revision = gh run view $Run -R $Repo --json headSha --jq .headSha
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve build source revision.' }
+    & (Join-Path $PSScriptRoot 'sync-icloud.ps1') -Target $CloudTarget -ArchiveRoot $ArchiveRoot -Run $Run -Commit $revision -Notes $Notes
+}
+[pscustomobject]@{ Version = $version; Build = $build; File = $file; PublicRelease = $false; iCloudSynced = (-not $SkipICloud) }

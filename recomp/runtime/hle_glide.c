@@ -632,7 +632,15 @@ static int wide_mode(int *w, int *h) {
 }
 void hle_glide_patch_module(const char *file, uint32_t base) {
     int w,h;
-    if (!strstr(file,"voodoo2a") || base != 0x01000000u || !wide_mode(&w,&h)) return;
+    if (!strstr(file,"voodoo2a") || base != 0x01000000u) return;
+    /* Original exponent lookup has entries only for 1..256. Slots 9..11 are
+     * padding before the separate aspect table at +0x1445C. */
+    const uint8_t lod_signature[12] = {0,1,2,3,4,5,6,7,8,0,0,0};
+    if (!memcmp(MEM+base+0x14450u,lod_signature,sizeof lod_signature)) {
+        WR8(base+0x14459u,9); WR8(base+0x1445Au,10); WR8(base+0x1445Bu,11);
+        plat_log("NFS4 texture LOD table: 512/1024/2048 enabled");
+    }
+    if (!wide_mode(&w,&h)) return;
     uint32_t p=base+0x14130u;
     if (RD32(p)!=960 || RD32(p+4)!=720 || RD32(p+8)!=16 || RD32(p+16)!=1) {
         plat_log("NFS4 driver mode signature differs; widescreen disabled"); return;
@@ -967,7 +975,9 @@ GF(grTexDownloadMipMap) {
         tex_dims(large, aspect, &w, &h);
         if (logged++ < 8) plat_log("glide: huge texture %dx%d format %X at %08X", w, h, fmt, start);
     }
-    if (start + n <= TMU_SIZE) memcpy(g_tmu + start, MEM + data, n);
+    uint32_t mirror = hle_car_texture_upload(data, small, large, aspect, fmt);
+    if (start + n <= TMU_SIZE) memcpy(g_tmu + start, MEM + (mirror ? mirror : data), n);
+    if (mirror) guest_free(mirror);
     if (g_gpu) { gpu_flush(); tex_invalidate(start, n); }
     RETURN(4, 0);
 }
@@ -1005,6 +1015,14 @@ GF(grTexSource) {
     g_tex.addr = start; g_tex.small_lod = small; g_tex.large_lod = large; g_tex.aspect = aspect; g_tex.format = fmt;
     tex_dims(large, aspect, &g_tex.w, &g_tex.h);
     g_tex_valid = 1;
+    if (getenv("NFS4_TRACE_TEXTURES")) {
+        static unsigned seen[32];
+        unsigned key = ((unsigned)large & 15) * 32 + ((unsigned)fmt & 31);
+        if (!(seen[key / 32] & (1u << (key % 32)))) {
+            seen[key / 32] |= 1u << (key % 32);
+            plat_log("glide: texture source %dx%d format %X", g_tex.w, g_tex.h, fmt);
+        }
+    }
     RETURN(4, 0);
 }
 GF(grTexFilterMode) { g_filter_bilinear = ARG(2) != 0; RETURN(3, 0); }

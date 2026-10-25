@@ -529,6 +529,12 @@ class Emitter:
             if fn.entry == 0x0043C260: self.out('  hle_frontend_observed(0);')
             if fn.entry == 0x0051A710: self.out('  eax = hle_glide_set_mode(eax, RD32(esp));')
             if fn.entry == 0x0051A390: self.out('  hle_glide_prepare_modes();')
+            if fn.entry == 0x004EEBA0:
+                self.out('  if (eax >= 512 && eax <= 2048 && edx >= eax && !(eax & (eax-1))) { c->eax = eax; c->ret_to = RD32(esp); c->esp = esp + 4; return; }')
+            if fn.entry == 0x004EF920:
+                self.out('  uint32_t hd_object = eax;')
+                self.out('  uint32_t hd_tga = hle_car_texture_begin(&edx, &ebx, ecx, esp);')
+                self.out('  uint32_t hd_side = ebx;')
 
         if fn.order[0] != fn.entry:
             self.out('  goto L_%08X;' % fn.entry)
@@ -728,6 +734,9 @@ class Emitter:
                 cond, pre = '(ecx != 0 && !zf)', 'ecx--; '
             return '%sif (%s) { %s }' % (pre, cond, self.goto_or_tail(fn, t, 0))
         if m == 'call':
+            if (self.prefix == 'nfs4' and fn.entry == 0x004EF920 and i.address == 0x004EFB62
+                    and self.mod.pe.FILE_HEADER.TimeDateStamp == 0x57334341):
+                return 'hle_car_texture_copy(eax, edx, ebx, hd_side);'
             post = ' '.join('%sf = c->f_%sf;' % (f.lower(), f.lower()) for f in sorted(live))
             return self.call(fn, i, nxt) + (' ' + post if post else '')
         if m.startswith('ret'):
@@ -735,6 +744,9 @@ class Emitter:
             keep = ''
             if fn.entry in Function.flag_returning:
                 keep = 'c->f_cf = cf; c->f_pf = pf; c->f_af = af; c->f_zf = zf; c->f_sf = sf; c->f_of = of; '
+            if (self.prefix == 'nfs4' and fn.entry == 0x004EF920
+                    and self.mod.pe.FILE_HEADER.TimeDateStamp == 0x57334341):
+                keep += 'hle_car_texture_end(hd_tga, eax == 0 ? RD32(hd_object + 0x1F38u) : 0, hd_side); '
             return '%sc->ret_to = RD32(esp); esp += %d; SYNC_OUT; return;' % (keep, 4 + n)
         return self.insn2(fn, i, live, nxt)
 
