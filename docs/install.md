@@ -5,7 +5,7 @@ unsigned arm64 IPA는 소유자의 빌드·패키지 검사 후 배포합니다.
 1. 이 프로젝트의 `Build IPA`가 만든 암호화된 아티팩트를 소유자의 PC에서 `tools/release-ipa.ps1`로 복호화해 `dist/ipa/NFS4-<버전>-b<빌드>.ipa`를 얻습니다.
 2. 파일 앱의 iCloud Drive › iOS 포트 IPA에서 최신 NFS4 IPA를 확인하고 LiveContainer의 + 버튼에서 선택합니다. 이전 버전은 PC의 버전별 보관함에 남깁니다. 앱의 기본(비공유) 컨테이너를 사용합니다.
 3. 앱을 한 번 실행해 `LiveContainer › Games › NFS4 › game` 폴더를 만듭니다.
-4. PC에서 이 프로젝트의 `tools/PC에서-받기-서버.cmd`를 실행합니다. 이미 같은 포트 8765의 서버가 실행 중이면 임의로 종료하지 말고 해당 서버 구성을 사용자와 확인합니다.
+4. PC에서는 공용 `E:/ios-ports/PC에서-받기-서버.cmd`의 서버만 사용합니다. 공용 서버의 시작·중지·재시작은 사용자가 합니다. 프로젝트의 기존 .cmd 실행기는 폐기 안내만 표시합니다. Python 복사본은 PC 안 시험 전용(`--port 18765 --host 127.0.0.1`)이며 휴대폰 전송용으로 사용하지 않습니다. NFS4 등록이 필요하면 `docs/공용폴더-반영요청.md`를 사용자에게 반영 요청합니다.
 5. 같은 와이파이에서 앱의 `PC에서 받기`를 선택합니다. 목록의 모든 파일을 받은 뒤 실행합니다.
 6. 문제가 생기면 앱 설정에 표시되는 버전·빌드 번호와 `LiveContainer › Games › NFS4 › save`의 `nfs4host.log`, `nfs4host.prev.log`를 확인합니다.
 

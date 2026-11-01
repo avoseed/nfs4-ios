@@ -1,10 +1,20 @@
 {
+  "_comment": "Reference only. No per-project server. Submit the registration through docs/공용폴더-반영요청.md; the owner edits the shared config.",
   "NFS4": {
-    "path": "../game",
+    "path": "F:/NFS4-iOS/game",
     "include": [
       "*"
     ],
-    "exclude": [],
-    "lite_exclude": []
+    "exclude": [
+      "*.log",
+      "*.dmp",
+      "*.tmp",
+      "nfs4host*",
+      "cache/*",
+      "*/cache/*",
+      ".pcimport*"
+    ],
+    "overlay": [],
+    "include_manifest": null
   }
 }

@@ -1,29 +1,19 @@
-"""Serve game folders to the iOS port apps over Wi-Fi ("PC에서 받기").
+"""PC-only test copy of the shared transfer implementation.
 
-The apps ask for a file list, then fetch each file into their own game folder,
-skipping files they already have, so an interrupted transfer just resumes.
-
-    python serve-games.py            # MV Player gets low-quality videos only (lite)
-    python serve-games.py --full     # everything, including high-quality videos
-
-Protocol (shared by all port apps, see E:\\ios-ports\\README.md):
-    GET /api/manifest/<App>       -> {"app", "total", "files": [{"p": path, "s": size}]}
-    GET /api/file/<App>/<path>    -> the file (Range supported)
-Only folders listed in games.json are served, read-only, on the local network.
+Usage: python -B tools/serve-games.py --port 18765 --host 127.0.0.1
+Phone transfers must use the owner-managed shared server in E:/ios-ports.
+Shared registration changes belong in docs/공용폴더-반영요청.md.
 """
 import argparse
 import fnmatch
 import json
 import os
-import socket
 import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = os.path.join(HERE, 'games.json')
-if not os.path.isfile(CONFIG):
-    CONFIG = os.path.join(HERE, 'games.example.json')
 
 
 def matches(path, patterns):
@@ -45,11 +35,19 @@ def build_manifest(name, game, lite):
     root = game['path']
     include = game.get('include', ['*'])
     exclude = game.get('exclude', []) + (game.get('lite_exclude', []) if lite else [])
+    # 'include_manifest' (optional): a JSON file in the game folder whose "after"
+    # entries list the only files to send (e.g. RTK5's audited PATCH-MANIFEST.json).
+    allowed = None
+    if game.get('include_manifest'):
+        with open(os.path.join(root, game['include_manifest']), encoding='utf-8') as f:
+            allowed = {r['path'].replace('\\', '/').lower() for r in json.load(f)['after']}
     sources = {}
     for dirpath, _, names in os.walk(root):
         for n in names:
             full = os.path.join(dirpath, n)
             rel = os.path.relpath(full, root).replace('\\', '/')
+            if allowed is not None and rel.lower() not in allowed:
+                continue
             if matches(rel, include) and not matches(rel, exclude):
                 sources[rel] = full
     for overlay in game.get('overlay', []):
@@ -127,48 +125,30 @@ class Handler(BaseHTTPRequestHandler):
                 left -= len(chunk)
 
 
-def lan_addresses():
-    addrs = set()
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(('192.168.0.1', 9))  # no packet is sent; just picks the LAN interface
-        addrs.add(s.getsockname()[0])
-        s.close()
-    except OSError:
-        pass
-    for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-        ip = info[4][0]
-        if not ip.startswith('127.'):
-            addrs.add(ip)
-    return sorted(addrs)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--port', type=int, default=8765)
-    ap.add_argument('--host', default='0.0.0.0', help='127.0.0.1 to test on this PC only')
+    ap.add_argument('--port', type=int, required=True, help='PC-only: 18765')
+    ap.add_argument('--host', required=True, help='PC-only: 127.0.0.1')
     ap.add_argument('--full', action='store_true', help='also send high-quality videos (MV Player)')
     args = ap.parse_args()
+    if args.port != 18765 or args.host != '127.0.0.1':
+        ap.error('PC-only test copy requires --port 18765 --host 127.0.0.1')
 
     with open(CONFIG, encoding='utf-8') as f:
         games = {k: v for k, v in json.load(f).items() if not k.startswith('_')}
-    for game in games.values():
-        if not os.path.isabs(game['path']):
-            game['path'] = os.path.abspath(os.path.join(HERE, game['path']))
+    if set(games) != {'NFS4'}:
+        ap.error('This local test config must contain only NFS4')
     games = {k: v for k, v in games.items() if os.path.isdir(v['path'])}
     Handler.games = games
     for k, v in games.items():
         Handler.manifests[k], Handler.sources[k] = build_manifest(k, v, lite=not args.full)
 
-    print('게임 파일 전송 (PC에서 받기)')
+    print('NFS4 PC-only loopback test: http://127.0.0.1:18765')
     for k, m in Handler.manifests.items():
-        print(f'  {k:12s} {len(m["files"]):6d} files  {m["total"] / 1e9:5.2f} GB')
-    print()
-    print('아이폰 앱의 "PC에서 받기"에 아래 주소 중 하나를 넣으세요 (같은 와이파이):')
-    for ip in lan_addresses():
-        print(f'  {ip}:{args.port}')
-    print()
-    print('다 받으면 이 창에서 Ctrl+C로 끄세요.')
+        print(f'  {k}: {len(m["files"])} files, {m["total"]} bytes')
+    print('Phone transfers use the shared server, not this test copy.')
     sys.stdout.flush()
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
