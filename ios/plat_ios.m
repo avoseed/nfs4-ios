@@ -568,22 +568,80 @@ static UIView *glass_in(UIView *parent, CGFloat radius) {
     return v;
 }
 
-// an icon with an optional caption under it, centred in its parent
+// Control face, the same as the RVGL port (E:\rvgl-ios\app\TouchControls.m): a thin white ring over a
+// dark see-through disc (a capsule when wider than tall). The shadow has a path, so it is not worked out
+// from the layer's pixels on every frame over the game.
+@interface RoundFace : UIView
+@end
+@implementation RoundFace
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat r = fmin(self.bounds.size.width, self.bounds.size.height) / 2;
+    self.layer.cornerRadius = r;
+    self.layer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:self.bounds cornerRadius:r].CGPath;
+}
+@end
+static UIView *face_in(UIView *parent) {
+    RoundFace *v = [RoundFace new];
+    v.userInteractionEnabled = NO;
+    v.backgroundColor = [UIColor colorWithWhite:0 alpha:0.3];
+    v.layer.borderWidth = 2;
+    v.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.85].CGColor;
+    v.layer.shadowColor = UIColor.blackColor.CGColor;
+    v.layer.shadowOpacity = 0.3;
+    v.layer.shadowRadius = 3;
+    v.layer.shadowOffset = CGSizeMake(0, 1);
+    [parent insertSubview:v atIndex:0];
+    pin_edges(v, parent);
+    return v;
+}
+
+// a badge on the ring for the gamepad input that does the same thing: face buttons in their usual
+// colours, the rest as a dark pill
+static UILabel *badge_in(UIView *parent, NSString *text) {
+    NSDictionary *face = @{ @"A" : [UIColor colorWithRed:0.30 green:0.76 blue:0.36 alpha:1],
+                            @"B" : [UIColor colorWithRed:0.92 green:0.26 blue:0.24 alpha:1],
+                            @"X" : [UIColor colorWithRed:0.22 green:0.50 blue:0.98 alpha:1],
+                            @"Y" : [UIColor colorWithRed:0.97 green:0.76 blue:0.16 alpha:1] };
+    UILabel *l = [UILabel new];
+    l.text = text;
+    l.textAlignment = NSTextAlignmentCenter;
+    l.textColor = UIColor.whiteColor;
+    l.font = [UIFont systemFontOfSize:text.length > 1 ? 10 : 12 weight:UIFontWeightBold];
+    l.backgroundColor = face[text] ?: [UIColor colorWithWhite:0.12 alpha:0.9];
+    l.layer.borderWidth = face[text] ? 0 : 1;
+    l.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.7].CGColor;
+    l.bounds = CGRectMake(0, 0, text.length > 1 ? 28 : 22, 22);
+    l.layer.cornerRadius = 11;
+    l.layer.masksToBounds = YES;
+    l.userInteractionEnabled = NO;
+    [parent addSubview:l];
+    return l;
+}
+
+// a white icon with an optional name under it, centred in its parent
 static void icon_in(UIView *parent, UIImage *img, NSString *caption) {
     UIImageView *iv = [[UIImageView alloc] initWithImage:img];
-    iv.tintColor = [UIColor colorWithWhite:1 alpha:0.92];
+    iv.tintColor = UIColor.whiteColor;
     UIStackView *st = [[UIStackView alloc] initWithArrangedSubviews:@[ iv ]];
     st.axis = UILayoutConstraintAxisVertical;
     st.alignment = UIStackViewAlignmentCenter;
-    st.spacing = 3;
+    st.spacing = 2;
     st.userInteractionEnabled = NO;
     if (caption) {
         UILabel *l = [UILabel new];
         l.text = caption;
-        l.font = [UIFont systemFontOfSize:10 weight:UIFontWeightSemibold];
-        l.textColor = [UIColor colorWithWhite:1 alpha:0.7];
+        l.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+        l.textColor = [UIColor colorWithWhite:1 alpha:0.95];
         [st addArrangedSubview:l];
     }
+    // readable over bright scenery; rasterised once, the icon and its name do not change
+    st.layer.shadowColor = UIColor.blackColor.CGColor;
+    st.layer.shadowOpacity = 0.5;
+    st.layer.shadowRadius = 2;
+    st.layer.shadowOffset = CGSizeMake(0, 1);
+    st.layer.shouldRasterize = YES;
+    st.layer.rasterizationScale = UIScreen.mainScreen.scale;
     st.translatesAutoresizingMaskIntoConstraints = NO;
     [parent addSubview:st];
     [st.centerXAnchor constraintEqualToAnchor:parent.centerXAnchor].active = YES;
@@ -607,6 +665,9 @@ static UIImpactFeedbackGenerator *tap_haptic(void) {
 @interface KeyButton : UIView <OverlayItem>
 @property(nonatomic) uint8_t scan;
 @property(nonatomic) UIView *glow;
+@property(nonatomic) UILabel *badge;
+@property(nonatomic, copy) NSString *badgeText;   // the gamepad input shown on the ring (badge_in)
+@property(nonatomic) CGFloat slop;       // extra touch margin around the circle (pedals)
 @end
 
 static void set_cruise(BOOL on);
@@ -619,18 +680,32 @@ static void set_cruise(BOOL on);
     _scale = 1;
     _haptic = YES;
     _radius = r;
-    glass_in(self, r);
-    _glow = [UIView new];
+    face_in(self);
+    _glow = [RoundFace new];
     _glow.backgroundColor = UIColor.whiteColor;
     _glow.alpha = 0;
-    _glow.layer.cornerRadius = r;
-    _glow.layer.cornerCurve = kCACornerCurveContinuous;
     _glow.userInteractionEnabled = NO;
     [self addSubview:_glow];
     pin_edges(_glow, self);
     icon_in(self, img, caption);
     self.multipleTouchEnabled = YES;
     return self;
+}
+- (void)setBadgeText:(NSString *)text {
+    _badgeText = [text copy];
+    [_badge removeFromSuperview];
+    _badge = text ? badge_in(self, text) : nil;
+    [self setNeedsLayout];
+}
+// round (a pill when the frame is not square); the badge sits on the ring, up and to the right
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGSize s = self.bounds.size;
+    _radius = fmin(s.width, s.height) / 2;
+    _badge.center = CGPointMake(s.width / 2 * (1 + M_SQRT1_2), s.height / 2 * (1 - M_SQRT1_2));
+}
+- (BOOL)pointInside:(CGPoint)p withEvent:(UIEvent *)e {
+    return CGRectContainsPoint(CGRectInset(self.bounds, -_slop, -_slop), p);
 }
 - (void)press:(BOOL)down {
     if (g_overlay_editing) return;
@@ -640,7 +715,7 @@ static void set_cruise(BOOL on);
     [UIView animateWithDuration:down ? 0.06 : 0.15 delay:0 options:UIViewAnimationOptionBeginFromCurrentState
                      animations:^{
                          self.transform = CGAffineTransformMakeScale(s, s);
-                         self.glow.alpha = down ? 0.22 : 0;
+                         self.glow.alpha = down ? 0.28 : 0;
                      } completion:nil];
 }
 // a thumb can land as two touches: the button lets go only when the last of them lifts
@@ -669,7 +744,7 @@ static void set_cruise(BOOL on) {
 // green while on, dimmer while the brake pauses it
 static void cruise_glow(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        g_cruise_button.glow.alpha = !g_cruise ? 0 : g_cruise_paused ? 0.12 : 0.4;
+        g_cruise_button.glow.alpha = !g_cruise ? 0 : g_cruise_paused ? 0.18 : 0.45;
         g_cruise_button.glow.backgroundColor = [UIColor colorWithRed:0.3 green:0.85 blue:0.45 alpha:1];
     });
 }
@@ -682,57 +757,67 @@ static void cruise_glow(void) {
 }
 @end
 
-// steering pad for the left thumb: the finger's side of the centre holds ◀ or ▶, sliding across switches
+// Steering for the left thumb, as in the RVGL port: a ringed capsule with ◀ ▶ at its ends; under the
+// finger a ringed knob, and a bar from the centre to it.
 @interface SteerPad : UIView <OverlayItem>
-@property(nonatomic) UIView *leftHalf, *rightHalf, *knob, *fill;
+@property(nonatomic) UIView *face, *leftHalf, *rightHalf, *knob, *fill, *tick;
 @property(nonatomic) UITouch *active;
-@property(nonatomic) CGFloat originX;
 @property(nonatomic) BOOL atLimit;
+@property(nonatomic) float value;
+@property(nonatomic) CGFloat knobX;
 @end
 @implementation SteerPad
 @synthesize scale = _scale, haptic = _haptic, radius = _radius;
 - (instancetype)init {
     self = [super initWithFrame:CGRectZero];
-    const CGFloat r = 26;
     _scale = 1;
     _haptic = YES;
-    _radius = r;
-    glass_in(self, r);
-    self.layer.cornerRadius = r;
-    self.layer.cornerCurve = kCACornerCurveContinuous;
-    self.clipsToBounds = YES;
     self.multipleTouchEnabled = YES;
+    _face = face_in(self);
+    _face.layer.shadowOpacity = 0;
+    _face.clipsToBounds = YES;
     NSString *names[2] = { @"chevron.left", @"chevron.right" };
     for (int i = 0; i < 2; i++) {
         UIView *h = [UIView new];
-        h.backgroundColor = [UIColor colorWithWhite:1 alpha:0];
         h.userInteractionEnabled = NO;
-        h.translatesAutoresizingMaskIntoConstraints = NO;
-        [self addSubview:h];
-        [NSLayoutConstraint activateConstraints:@[
-            [h.topAnchor constraintEqualToAnchor:self.topAnchor], [h.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
-            [h.widthAnchor constraintEqualToAnchor:self.widthAnchor multiplier:0.5],
-            i ? [h.trailingAnchor constraintEqualToAnchor:self.trailingAnchor] : [h.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
-        ]];
-        icon_in(h, symbol(names[i], nil, 30), nil);
+        [_face addSubview:h];
+        icon_in(h, symbol(names[i], nil, 26), nil);
         if (i) _rightHalf = h; else _leftHalf = h;
     }
-    // the bar from where the finger landed to where it is now, and the knob under the finger
+    _tick = [UIView new];
+    _tick.backgroundColor = [UIColor colorWithWhite:1 alpha:0.3];
     _fill = [UIView new];
-    _fill.backgroundColor = [UIColor colorWithWhite:1 alpha:0.3];
+    _fill.backgroundColor = [UIColor colorWithWhite:1 alpha:0.35];
     _fill.layer.cornerRadius = 3;
-    _fill.userInteractionEnabled = NO;
-    _fill.hidden = YES;
-    [self addSubview:_fill];
     _knob = [UIView new];
-    _knob.backgroundColor = [UIColor colorWithWhite:1 alpha:0.35];
-    _knob.layer.cornerRadius = 22;
-    _knob.layer.borderWidth = 1;
-    _knob.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.6].CGColor;
-    _knob.userInteractionEnabled = NO;
-    _knob.hidden = YES;
-    [self addSubview:_knob];
+    _knob.backgroundColor = [UIColor colorWithWhite:1 alpha:0.22];
+    _knob.layer.cornerRadius = 26;
+    _knob.layer.borderWidth = 2;
+    _knob.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.9].CGColor;
+    for (UIView *v in @[ _tick, _fill, _knob ]) { v.userInteractionEnabled = NO; [self addSubview:v]; }
     return self;
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
+    _radius = fmin(w, h) / 2;
+    _leftHalf.frame = CGRectMake(0, 0, w / 2, h);
+    _rightHalf.frame = CGRectMake(w / 2, 0, w / 2, h);
+    _tick.frame = CGRectMake(w / 2 - 0.75, h * 0.3, 1.5, h * 0.4);
+    [self show];
+}
+// knob, bar and the side's highlight for the current value
+- (void)show {
+    CGFloat w = self.bounds.size.width, h = self.bounds.size.height, mid = w / 2;
+    _knob.hidden = _fill.hidden = !_active;
+    _knob.frame = CGRectMake(_knobX - 26, h / 2 - 26, 52, 52);
+    _fill.frame = CGRectMake(fmin(mid, _knobX), h / 2 - 3, fabs(_knobX - mid), 6);
+    _leftHalf.backgroundColor = [UIColor colorWithWhite:1 alpha:_value < 0 ? -_value * 0.25 : 0];
+    _rightHalf.backgroundColor = [UIColor colorWithWhite:1 alpha:_value > 0 ? _value * 0.25 : 0];
+}
+// a touch just outside the capsule still steers
+- (BOOL)pointInside:(CGPoint)p withEvent:(UIEvent *)e {
+    return CGRectContainsPoint(CGRectInset(self.bounds, -24, -24), p);
 }
 
 // Pressing and sliding both steer: the finger's place relative to the pad's centre sets the
@@ -751,24 +836,20 @@ static void cruise_glow(void) {
                 if (_haptic) [tap_haptic() impactOccurred];
                 break;
             }
-    CGFloat w = self.bounds.size.width, h = self.bounds.size.height, full = w * 0.25, v = 0;
-    _originX = w / 2;
+    CGFloat w = self.bounds.size.width, full = w * 0.25, v = 0;
     if (_active) {
-        CGFloat dx = [_active locationInView:self].x - _originX;
+        CGFloat dx = [_active locationInView:self].x - w / 2;
         CGFloat d = fmax(-1, fmin(1, dx / full)), a = fabs(d);
         v = a < 0.06 ? 0 : copysign(pow((a - 0.06) / 0.94, 1.4), d);
-        CGFloat kx = _originX + d * full;
-        _knob.frame = CGRectMake(kx - 22, h / 2 - 22, 44, 44);
-        _fill.frame = CGRectMake(fmin(_originX, kx), h / 2 - 3, fabs(kx - _originX), 6);
+        _knobX = w / 2 + d * full;
     }
-    _knob.hidden = _fill.hidden = !_active;
     BOOL limit = fabs(v) > 0.999;
     if (limit && !_atLimit && _haptic) [tap_haptic() impactOccurred];
     _atLimit = limit;
     g_touch_steer = (float)v;
     update_joy();
-    _leftHalf.backgroundColor = [UIColor colorWithWhite:1 alpha:v < 0 ? -v * 0.25 : 0];
-    _rightHalf.backgroundColor = [UIColor colorWithWhite:1 alpha:v > 0 ? v * 0.25 : 0];
+    _value = (float)v;
+    [self show];
 }
 - (void)touchesBegan:(NSSet *)t withEvent:(UIEvent *)e { [self steer:e]; }
 - (void)touchesMoved:(NSSet *)t withEvent:(UIEvent *)e { [self steer:e]; }
@@ -799,7 +880,7 @@ enum {
 static NSString *const kImportAddress = @"wifiImportAddress";   // last PC address for "PC에서 받기"
 // Per-control overrides from the overlay editor: id -> {x, y: centre as a fraction of the screen,
 // s: scale, h: haptics}. Controls without an entry sit at their default place.
-static NSString *const kOverlayLayout = @"overlay";
+static NSString *const kOverlayLayout = @"overlay3";   // "overlay": places for the earlier glass layout
 static NSString *const kOverlayAlpha = @"overlayAlpha";
 static NSString *const kImportMarker = @".pcimport-incomplete";  // in <data root>/game while a transfer is unfinished
 
@@ -1408,36 +1489,44 @@ static NSString *item_name(NSString *ident) {
     return b;
 }
 
-// Default places inside the safe area: left thumb steering pad and look-behind; right thumb pedals,
-// horn/siren and spike strip; top corners pause, map, camera, reset and Enter
+// Default places inside the safe area, as in the RVGL port (itself after a GTA-style mobile layout):
+// the left thumb steers on a capsule with look-behind above its right end; the right thumb has the
+// pedals at the bottom corner (accelerator largest) and two columns of race buttons above them
+// (auto-accelerate and reset over the accelerator, horn/siren and spike strip over the brake); small
+// pause, map and camera buttons in a column at the top left, Enter at the top right
 // (handbrake, gears and lights are on the gamepad only).
+static CGRect disc(CGFloat cx, CGFloat cy, CGFloat d) { return CGRectMake(cx - d / 2, cy - d / 2, d, d); }
+static NSValue *val(CGRect r) { return [NSValue valueWithCGRect:r]; }
 - (NSDictionary<NSString *, NSValue *> *)defaultFrames {
     CGRect g = UIEdgeInsetsInsetRect(self.view.bounds, self.view.safeAreaInsets);
     const CGFloat m = 14, s = 10;
     CGFloat L = CGRectGetMinX(g) + m, R = CGRectGetMaxX(g) - m, T = CGRectGetMinY(g) + m, B = CGRectGetMaxY(g) - m;
-    CGRect steer = CGRectMake(L, B - 112, 232, 112);
-    CGRect gas = CGRectMake(R - 92, B - 128, 92, 128);
-    CGRect brake = CGRectMake(gas.origin.x - s - 92, B - 100, 92, 100);
-    CGRect pause = CGRectMake(L, T, 54, 50), enter = CGRectMake(R - 54, T, 54, 50);
+    // circles by importance: accelerator, brake, race buttons, Enter, the small top-left ones
+    const CGFloat dGas = 100, dBrake = 88, dRace = 66, dEnter = 58, dSmall = 52;
+    CGRect steer = CGRectMake(L, B - 104, 232, 104);
+    CGRect gas = CGRectMake(R - dGas, B - dGas, dGas, dGas);
+    CGRect brake = CGRectMake(gas.origin.x - s - dBrake, B - dBrake, dBrake, dBrake);
+    CGFloat gx = CGRectGetMidX(gas), bx = CGRectGetMidX(brake);
+    CGFloat c1 = gas.origin.y - s - dRace / 2, b1 = brake.origin.y - s - dRace / 2;
     return @{
-        @"steer" : [NSValue valueWithCGRect:steer],
-        @"back" : [NSValue valueWithCGRect:CGRectMake(L, steer.origin.y - s - 56, 64, 56)],
-        @"gas" : [NSValue valueWithCGRect:gas],
-        @"brake" : [NSValue valueWithCGRect:brake],
-        @"spike" : [NSValue valueWithCGRect:CGRectMake(gas.origin.x, gas.origin.y - s - 54, 92, 54)],
-        @"cruise" : [NSValue valueWithCGRect:CGRectMake(gas.origin.x, gas.origin.y - 2 * (s + 54), 92, 54)],
-        @"horn" : [NSValue valueWithCGRect:CGRectMake(brake.origin.x, brake.origin.y - s - 54, 92, 54)],
-        @"pause" : [NSValue valueWithCGRect:pause],
-        @"map" : [NSValue valueWithCGRect:CGRectOffset(pause, 54 + s, 0)],
-        @"cam" : [NSValue valueWithCGRect:CGRectOffset(pause, 2 * (54 + s), 0)],
-        @"enter" : [NSValue valueWithCGRect:enter],
-        @"reset" : [NSValue valueWithCGRect:CGRectOffset(enter, -(54 + s), 0)],
+        @"steer" : val(steer),
+        @"back" : val(disc(CGRectGetMaxX(steer) - dRace / 2, steer.origin.y - s - dRace / 2, dRace)),
+        @"gas" : val(gas),
+        @"brake" : val(brake),
+        @"cruise" : val(disc(gx, c1, dRace)),
+        @"reset" : val(disc(gx, c1 - s - dRace, dRace)),
+        @"horn" : val(disc(bx, b1, dRace)),
+        @"spike" : val(disc(bx, b1 - s - dRace, dRace)),
+        @"pause" : val(disc(L + dSmall / 2, T + dSmall / 2, dSmall)),
+        @"map" : val(disc(L + dSmall / 2, T + dSmall * 1.5 + s, dSmall)),
+        @"cam" : val(disc(L + dSmall / 2, T + dSmall * 2.5 + 2 * s, dSmall)),
+        @"enter" : val(disc(R - dEnter / 2, T + dEnter / 2, dEnter)),
     };
 }
 
 - (CGFloat)overlayAlpha {
     NSNumber *a = [[NSUserDefaults standardUserDefaults] objectForKey:kOverlayAlpha];
-    return a ? a.doubleValue : 0.6;
+    return a ? a.doubleValue : 1;        // the discs are see-through themselves
 }
 
 - (void)layoutOverlay {
@@ -1485,11 +1574,15 @@ static NSString *item_name(NSString *ident) {
         b.scale = k;
         b.transform = CGAffineTransformMakeScale(k, k);
     }
-    // ⚙︎: top centre in a race, top of the right bar on menu screens
-    _gear.bounds = CGRectMake(0, 0, 36, 36);
-    _gear.center = _menuMode ? CGPointMake(cxR, in.top + 24) : CGPointMake(sz.width / 2, in.top + 24);
-    _kbd.bounds = CGRectMake(0, 0, 36, 36);
-    _kbd.center = CGPointMake(cxR, sz.height - in.bottom - 24);
+    // ⚙︎: top of the right bar on menu screens; in a race at the top of the side bar the picture is not
+    // drawn in (the Dynamic Island side), or top centre without one
+    const CGFloat dGear = 42;
+    CGPoint race = in.left >= 40 ? CGPointMake(in.left / 2, MAX(in.top, 4) + dGear / 2 + 2)
+                                 : CGPointMake(sz.width / 2, in.top + dGear / 2 + 8);
+    _gear.bounds = CGRectMake(0, 0, dGear, dGear);
+    _gear.center = _menuMode ? CGPointMake(cxR, in.top + dGear / 2 + 4) : race;
+    _kbd.bounds = CGRectMake(0, 0, dGear, dGear);
+    _kbd.center = CGPointMake(cxR, sz.height - in.bottom - dGear / 2 - 4);
 }
 
 - (void)viewDidLayoutSubviews {
@@ -1509,20 +1602,26 @@ static NSString *item_name(NSString *ident) {
 
     _steerPad = [SteerPad new];
     [self addItem:_steerPad ident:@"steer"];
-    [self button:@"back" symbol:@"arrow.uturn.backward" or:nil caption:@"후방" scan:K_BACK icon:18 radius:18];
-    [self button:@"gas" symbol:@"pedal.accelerator.fill" or:@"arrowtriangle.up.fill" caption:@"가속" scan:K_GAS icon:30 radius:26];
-    [self button:@"brake" symbol:@"pedal.brake.fill" or:@"arrowtriangle.down.fill" caption:@"브레이크" scan:K_BRAKE icon:26 radius:26];
-    [self button:@"spike" symbol:@"exclamationmark.triangle.fill" or:nil caption:@"스파이크" scan:K_SPIKE icon:17 radius:18];
-    [self button:@"horn" symbol:@"megaphone.fill" or:nil caption:@"경적·사이렌" scan:K_HORN icon:17 radius:18];
-    CruiseButton *cruise = [[CruiseButton alloc] initWithSymbol:symbol(@"speedometer", @"gauge", 17) caption:@"오토 가속"
-                                                           scan:K_GAS radius:18];
+    // an icon with its name (the small top-left ones: icon only), and a badge for the gamepad input
+    // that does the same (the gamepad timer below; "R←" etc. are the right stick pushed that way)
+    [self button:@"back" symbol:@"arrow.uturn.backward" or:nil caption:@"후방" scan:K_BACK icon:22 radius:33].badgeText = @"R↓";
+    KeyButton *gas = [self button:@"gas" symbol:@"pedal.accelerator.fill" or:@"arrowtriangle.up.fill" caption:@"가속" scan:K_GAS icon:30 radius:50];
+    gas.slop = 10;
+    gas.badgeText = @"RT";
+    KeyButton *brake = [self button:@"brake" symbol:@"pedal.brake.fill" or:@"arrowtriangle.down.fill" caption:@"브레이크" scan:K_BRAKE icon:26 radius:44];
+    brake.slop = 8;
+    brake.badgeText = @"LT";
+    [self button:@"spike" symbol:@"exclamationmark.triangle.fill" or:nil caption:@"스파이크" scan:K_SPIKE icon:22 radius:33].badgeText = @"R3";
+    [self button:@"horn" symbol:@"megaphone.fill" or:nil caption:@"경적" scan:K_HORN icon:22 radius:33].badgeText = @"L3";
+    CruiseButton *cruise = [[CruiseButton alloc] initWithSymbol:symbol(@"speedometer", @"gauge", 22) caption:@"오토 가속"
+                                                           scan:K_GAS radius:33];
     [self addItem:cruise ident:@"cruise"];
     g_cruise_button = cruise;
-    [self button:@"pause" symbol:@"pause.fill" or:nil caption:@"일시정지" scan:K_ESC icon:16 radius:16];
-    [self button:@"map" symbol:@"map.fill" or:nil caption:@"지도" scan:K_MAP icon:16 radius:16];
-    [self button:@"cam" symbol:@"video.fill" or:nil caption:@"시점" scan:K_CAM icon:16 radius:16];
-    [self button:@"enter" symbol:@"return" or:nil caption:@"확인" scan:K_ENTER icon:16 radius:16];
-    [self button:@"reset" symbol:@"arrow.counterclockwise" or:nil caption:@"리셋" scan:K_RESET icon:16 radius:16];
+    [self button:@"pause" symbol:@"pause.fill" or:nil caption:nil scan:K_ESC icon:20 radius:26].badgeText = @"B";
+    [self button:@"map" symbol:@"map.fill" or:nil caption:nil scan:K_MAP icon:20 radius:26].badgeText = @"R←";
+    [self button:@"cam" symbol:@"video.fill" or:nil caption:nil scan:K_CAM icon:20 radius:26].badgeText = @"Y";
+    [self button:@"enter" symbol:@"return" or:nil caption:@"확인" scan:K_ENTER icon:18 radius:29].badgeText = @"A";
+    [self button:@"reset" symbol:@"arrow.counterclockwise" or:nil caption:@"리셋" scan:K_RESET icon:22 radius:33].badgeText = @"R→";
 
     // menu screens: arrows and Enter/Esc in the black bars (not editable: they follow the picture)
     _menuButtons = [NSMutableArray array];
@@ -1541,7 +1640,7 @@ static NSString *item_name(NSString *ident) {
     }
 
     // the settings button is always there so the editor can be reached; the icon is an image view
-    // over the glass (a UIButton's own image ended up under it and the button showed blank)
+    // over the face (a UIButton's own image ended up under the background and the button showed blank)
     _gear = [self roundButton:@"gearshape.fill" action:@selector(showSettings)];
     // menu screens: keyboard (player name, codes) at the bottom of the right bar
     _kbd = [self roundButton:@"keyboard" action:@selector(askText)];
@@ -1561,8 +1660,8 @@ static NSString *item_name(NSString *ident) {
 
 - (UIButton *)roundButton:(NSString *)sym action:(SEL)action {
     UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-    glass_in(b, 18);
-    icon_in(b, symbol(sym, nil, 15), nil);
+    face_in(b);
+    icon_in(b, symbol(sym, nil, 17), nil);
     [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
     [_controls addSubview:b];
     return b;
