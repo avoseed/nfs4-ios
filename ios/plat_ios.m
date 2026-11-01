@@ -307,11 +307,17 @@ static void start_audio(void) {
 // On menu screens the keys alone navigate, and the joystick rests so nothing moves twice.
 static float g_touch_steer, g_pad_steer, g_pad_throttle;   // -1 .. 1, set on the main thread
 static BOOL g_cruise;                                       // auto-accelerate toggle (set_cruise)
+static BOOL g_cruise_paused;                                // on, but the brake is held
+static void cruise_glow(void);
 
 static void update_joy(void) {
     if (hle_glide_in_menu()) { plat_joy_x = plat_joy_y = 0; plat_joy_buttons = 0; return; }
+    // braking pauses auto-accelerate; letting go of the brake resumes it
+    BOOL braking = plat_keys[0xD0] || g_pad_throttle > 0.2f;
+    BOOL paused = g_cruise && braking;
+    if (paused != g_cruise_paused) { g_cruise_paused = paused; cruise_glow(); }
     float kx = (plat_keys[0xCD] ? 1.f : 0.f) - (plat_keys[0xCB] ? 1.f : 0.f);       // arrows
-    float ky = (plat_keys[0xD0] ? 1.f : 0.f) - (plat_keys[0xC8] || g_cruise ? 1.f : 0.f);   // up = accelerate
+    float ky = (plat_keys[0xD0] ? 1.f : 0.f) - (plat_keys[0xC8] || (g_cruise && !braking) ? 1.f : 0.f);   // up = accelerate
     float x = kx + g_touch_steer + g_pad_steer, y = ky + g_pad_throttle;
     plat_joy_x = x < -1 ? -1 : x > 1 ? 1 : x;
     plat_joy_y = y < -1 ? -1 : y > 1 ? 1 : y;
@@ -628,8 +634,7 @@ static void set_cruise(BOOL on);
 }
 - (void)press:(BOOL)down {
     if (g_overlay_editing) return;
-    if (down && _scan == 0xD0) set_cruise(NO);         // braking ends auto-accelerate
-    key(_scan, down);
+    key(_scan, down);                                  // the brake only pauses auto-accelerate (update_joy)
     if (down && _haptic) [tap_haptic() impactOccurred];
     CGFloat s = down ? _scale * 0.92 : _scale;
     [UIView animateWithDuration:down ? 0.06 : 0.15 delay:0 options:UIViewAnimationOptionBeginFromCurrentState
@@ -658,8 +663,13 @@ static void set_cruise(BOOL on) {
     if (g_cruise == on) return;
     g_cruise = on;
     update_joy();
+    cruise_glow();
+}
+
+// green while on, dimmer while the brake pauses it
+static void cruise_glow(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        g_cruise_button.glow.alpha = g_cruise ? 0.4 : 0;
+        g_cruise_button.glow.alpha = !g_cruise ? 0 : g_cruise_paused ? 0.12 : 0.4;
         g_cruise_button.glow.backgroundColor = [UIColor colorWithRed:0.3 green:0.85 blue:0.45 alpha:1];
     });
 }
@@ -1798,8 +1808,7 @@ static NSString *item_name(NSString *ident) {
         key(K_BRAKE, (menu && lt > 0.2f) || p.dpad.down.isPressed);
         g_pad_steer = menu || fabsf(x) < 0.08f ? 0 : x;
         g_pad_throttle = menu ? 0 : lt - rt;
-        if (lt > 0.2f || p.dpad.down.isPressed) set_cruise(NO);
-        update_joy();
+        update_joy();                          // L2 / D-pad down pause auto-accelerate while held
         key(K_ENTER, p.buttonA.isPressed);
         key(K_ESC, p.buttonB.isPressed || p.buttonMenu.isPressed);
         key(K_HAND, p.buttonX.isPressed);
