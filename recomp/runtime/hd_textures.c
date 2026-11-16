@@ -109,6 +109,6 @@ uint32_t *hd_texture_find(const uint32_t *px, int w, int h, int *ow, int *oh) {
     if (!out) { plat_log("hd textures: %s is not a usable %dx%d redraw", path, w, h); return NULL; }
     *ow = (int)head[1]; *oh = (int)head[2];
     static int logged;
-    if (logged++ < 4) plat_log("hd textures: %dx%d -> %dx%d (%016llx)", w, h, *ow, *oh, (unsigned long long)key);
+    if (logged++ < 4 || getenv("NFS4_TRACE_HD")) plat_log("hd textures: %dx%d -> %dx%d (%016llx)", w, h, *ow, *oh, (unsigned long long)key);
     return out;
 }
