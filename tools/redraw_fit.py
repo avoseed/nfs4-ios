@@ -7,7 +7,7 @@
 #   - scaled to the output size: 4x, at most 256 px a side (the size Voodoo-era games keep; the HUD, 'out_max', 1024),
 #   - the broad colour is taken from the original (a model drifts in brightness), the detail from the answer,
 #   - the see-through shape comes from the original's alpha (hard edged, as the game's 1-bit alpha; enlarged smoothly
-#     for a 'soft' picture's 4444 glows), and any magenta the model left inside it is replaced by the enlarged original,
+#     for a 'soft' picture's 4444 glows and for any texture with in-between alpha: clouds, light rays, glass), and any magenta the model left inside it is replaced by the enlarged original,
 #   - a thin band at each edge fades into the enlarged original taken with wrap-around, so a texture that tiles
 #     on the track still meets itself without a seam.
 # -> <root>/output/<TRACK>/<key>.png (RGBA) for the pack (tools/hd_texture_pack.py), and
@@ -89,10 +89,22 @@ def fill_under(rgb, opaque, passes=64):
     return rgb
 
 
+def is_soft(b, orig):
+    """in-between alpha over more than 2% of the texels: clouds, light rays, shore foam, glass panes (UK bus stop
+    and phone box: alpha 83-96). Their see-through amount is the picture, so it must not be cut to 0/255."""
+    if b.get('soft'):
+        return True
+    a = np.asarray(orig.getchannel('A'))
+    return bool(((a > 0) & (a < 255)).mean() > 0.02)
+
+
 def fit_one(sheet, b, orig):
     x, y, w, h = b['box']
+    soft = is_soft(b, orig)
+    vis = 8 if soft else 128      # the alpha from which a texel's colour counts (a faint cloud is still its colour)
     # the box as sent: the original enlarged the same way, for finding it again
     sent = np.asarray(orig.convert('RGB').resize((w, h), Image.BICUBIC).convert('L'), np.float32)
+    # found again by what the model saw: the sheet shows texels under alpha 128 as magenta
     amask = np.asarray(orig.getchannel('A').resize((w, h), Image.NEAREST)) >= 128
     r = SEARCH
     region = sheet.crop((x - r, y - r, x + w + r, y + h + r))
@@ -100,7 +112,8 @@ def fit_one(sheet, b, orig):
     keyed = magenta(np.asarray(region))
     reg_l = reg.copy(); reg_l[keyed] = 0
     ref = sent.copy(); ref[~amask] = 0
-    d, dx, dy = best_shift(ref, reg_l, amask, r)
+    # nothing the model saw (a faint cloud is all under 128): left in place
+    d, dx, dy = best_shift(ref, reg_l, amask, r) if amask.any() else (0.0, 0, 0)
     d0 = float(np.abs(reg_l[r:r + h, r:r + w] - ref)[amask].mean()) if amask.any() else 0.0
     cut = region.crop((r + dx, r + dy, r + dx + w, r + dy + h))
 
@@ -108,7 +121,7 @@ def fit_one(sheet, b, orig):
     size = (round(orig.width * k), round(orig.height * k))
     out = np.asarray(cut.resize(size, Image.LANCZOS), np.float32)
     big = wrap_enlarge(orig.convert('RGB'), size)
-    opaque = np.asarray(orig.getchannel('A').resize(size, Image.NEAREST)) >= 128
+    opaque = np.asarray(orig.getchannel('A').resize(size, Image.NEAREST)) >= vis
 
     # magenta left inside the picture: the enlarged original there
     bad = magenta(out) & opaque
@@ -124,7 +137,7 @@ def fit_one(sheet, b, orig):
     o = np.asarray(orig.convert('RGB'), np.float32)
     small_out = np.asarray(Image.fromarray(np.clip(out + .5, 0, 255).astype(np.uint8), 'RGB').resize(orig.size, Image.BOX), np.float32)
     sigma = MATCH_SIGMA
-    keep = np.asarray(orig.getchannel('A')) >= 128
+    keep = np.asarray(orig.getchannel('A')) >= vis
     out = out + blur_to(o, keep, size, sigma) - blur_to(small_out, keep, size, sigma)
     # edges fade into the wrapped original so a tiling texture meets itself
     # (not the HUD: a sheet of parts the game cuts out by coordinates, never tiled)
@@ -135,8 +148,8 @@ def fit_one(sheet, b, orig):
     out = out * t + big * (1 - t)
     out = fill_under(np.clip(out, 0, 255), opaque)
     alpha = (opaque * 255).astype(np.uint8) if b.get('alpha') else np.full(opaque.shape, 255, np.uint8)
-    if b.get('soft'):
-        # in-between alpha (4444 glows): enlarged smoothly there; elsewhere a smooth but firm edge
+    if soft:
+        # in-between alpha (4444 glows, clouds, glass): enlarged smoothly there; elsewhere a smooth but firm edge
         a0 = orig.getchannel('A')
         smooth = np.asarray(a0.resize(size, Image.BICUBIC), np.float32)
         partial = np.asarray(a0.point(lambda v: 255 if 0 < v < 255 else 0).filter(ImageFilter.MaxFilter(3)).resize(size, Image.NEAREST)) > 0
