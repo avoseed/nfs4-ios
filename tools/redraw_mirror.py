@@ -2,16 +2,22 @@
 #   py -3 tools/redraw_mirror.py [--root D:/upscale/NFS4] TRACK ...
 # A track often holds the same picture flipped (signs seen from both sides, the night file's copies): TR0_018 is
 # TR0_031 upside down, texel for texel. The image model draws each on its own and the answers drift apart (one
-# keeps the mirror writing, the other does not). Pictures of output/<TRACK> whose originals (input/) are exact
-# flips or turns of each other form a group; the answer whose shrunken copy is nearest its own original - and
+# keeps the mirror writing, the other does not). Pictures of output/<TRACK> whose originals (input/) are flips
+# or turns of each other (texel for texel, or all but under 1%) form a group; the answer whose shrunken copy is nearest its own original - and
 # nearer to it than to the flipped original, so a wrongly turned answer is never chosen - is kept, and the
-# others are rewritten as its flip. Members left out of output/ (held back for a resend) are filled in too.
+# others in another turn (and any that fail the turn test) are rewritten as its flip; a day answer is preferred. Members left out of output/ (held back for a resend) are filled in too.
 import sys, pathlib
 import numpy as np
 from PIL import Image
 
 DEFAULT_ROOT = 'D:/upscale/NFS4'
 FLIPS = {'id': lambda x: x, 'lr': lambda x: x[:, ::-1], 'ud': lambda x: x[::-1], 'rot': lambda x: x[::-1, ::-1]}
+
+
+def near(x, y):
+    """The same picture: under 1% of the texels differ (the night file's copies are sometimes touched up a little:
+    COASTAL TRN0_146/147, the B&B sign, differ in 0.15%)."""
+    return x.shape == y.shape and (x != y).any(-1).mean() < 0.01
 
 
 def dist(ans, o):
@@ -41,10 +47,10 @@ def main():
             for b in keys[i + 1:]:
                 if b in group or orig[a].shape != orig[b].shape:
                     continue
-                for f in ('lr', 'ud', 'rot'):
-                    if (FLIPS[f](orig[a]) == orig[b]).all() and not (orig[a] == orig[b]).all():
+                for f in ('id', 'lr', 'ud', 'rot'):
+                    if near(FLIPS[f](orig[a]), orig[b]):
                         members[b] = f; break
-            if len(members) > 1 and done & set(members):
+            if len(set(members.values())) > 1 and done & set(members):
                 for k, f in members.items():
                     group[k] = (a, f)
         groups = {}
@@ -52,7 +58,7 @@ def main():
             groups.setdefault(lead, {})[k] = f
         changed = 0
         for lead, members in sorted(groups.items()):
-            best = None
+            best, keeps = None, set()
             for k in members:
                 if k not in done:
                     continue
@@ -60,15 +66,19 @@ def main():
                 own = dist(ans, orig[k])
                 turned = [m for m in members if members[m] != members[k]]   # the same picture in another turn
                 other = min(dist(ans, orig[m]) for m in turned)
-                if own < other and (best is None or own < best[1]):
-                    best = (k, own, ans)
+                if own < other:
+                    keeps.add(k)
+                    # a day picture first: the night copies are dark, so their small diff says little about the writing
+                    rank = (k.startswith('TRN'), own)
+                    if best is None or rank < best[1]:
+                        best = (k, rank, ans)
             if best is None:
                 print('%s %s: no answer keeps its own turn, left as is' % (track, lead)); continue
-            src, own, ans = best
+            src, (_, own), ans = best
             a = np.asarray(ans.convert('RGBA'))
             a = FLIPS[members[src]](a)                                  # back to the leader's turn
             for k, f in members.items():
-                if k == src:
+                if k == src or (f == members[src] and k in keeps):      # same turn and a sound answer of its own: kept
                     continue
                 Image.fromarray(np.ascontiguousarray(FLIPS[f](a))).save(out / (k + '.png'))
                 changed += 1
