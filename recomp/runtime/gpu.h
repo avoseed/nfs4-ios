@@ -40,6 +40,9 @@ typedef struct {
 int gpu_init(int w, int h);                       /* (re)open at Glide resolution; 0 = not available */
 int gpu_texture_create(int w, int h, int mipmapped);
 void gpu_texture_upload(int id, const uint32_t *rgba);    /* full level 0; backend builds mips */
+int gpu_astc_supported(void);                     /* ASTC 4x4 LDR textures (the redraw pack, hd_textures.c) */
+int gpu_texture_create_astc(int w, int h, int levels);    /* -1 where there is none */
+void gpu_texture_upload_astc(int id, const uint8_t *blocks);  /* every level, largest first, 16-byte 4x4 blocks */
 void gpu_texture_destroy(int id);
 void gpu_draw(const GpuState *s, const GpuVertex *v, int nverts);
 void gpu_swap(void);

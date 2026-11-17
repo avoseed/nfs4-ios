@@ -149,6 +149,34 @@ void gpu_texture_upload(int tid, const uint32_t *rgba) {
     }
 }
 
+/* the redraw pack's ASTC 4x4 pictures (hd_textures.c): every mip level comes from the file, largest first */
+int gpu_astc_supported(void) {
+    id<MTLDevice> d = dev ? dev : MTLCreateSystemDefaultDevice();
+    return d && [d supportsFamily:MTLGPUFamilyApple2];
+}
+
+int gpu_texture_create_astc(int w, int h, int levels) {
+    for (int i = 0; i < MAXTEX; i++) {
+        if (texs[i]) continue;
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatASTC_4x4_LDR width:w height:h mipmapped:levels > 1];
+        td.mipmapLevelCount = levels;
+        td.usage = MTLTextureUsageShaderRead;
+        texs[i] = [dev newTextureWithDescriptor:td];
+        return texs[i] ? i : -1;
+    }
+    return -1;
+}
+
+void gpu_texture_upload_astc(int tid, const uint8_t *blocks) {
+    if (tid < 0 || tid >= MAXTEX || !texs[tid]) return;
+    id<MTLTexture> t = texs[tid];
+    for (NSUInteger l = 0; l < t.mipmapLevelCount; l++) {
+        NSUInteger w = MAX(1, t.width >> l), h = MAX(1, t.height >> l), row = (w + 3) / 4 * 16;
+        [t replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:l slice:0 withBytes:blocks bytesPerRow:row bytesPerImage:0];
+        blocks += row * ((h + 3) / 4);
+    }
+}
+
 void gpu_texture_destroy(int tid) {
     if (tid >= 0 && tid < MAXTEX) texs[tid] = nil;
 }

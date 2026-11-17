@@ -7,7 +7,9 @@
  * the same QFS picture gives the same key in every format, and the pack tool can work the key out from the QFS
  * without running the game.
  *
- * Pack: hdtex/<key, 16 hex>.rgba = "HDT1", width, height (u32 little-endian), then RGBA bytes, in the mods folder
+ * Pack: hdtex/<key, 16 hex>.rgba = "HDT1", width, height (u32 little-endian), then RGBA bytes, or the same picture
+ * compressed, hdtex/<key>.astc = "HDT2", width, height, levels, 0x0404, then ASTC 4x4 blocks for every mip level
+ * (tools/hd_astc.py: a quarter of the memory, read only where the GPU samples ASTC, i.e. on the iPhone), in the mods folder
  * or beside nfs4.exe (where "PC에서 받기" puts a PC overlay's files); the mods one wins. No folder, no change. NFS4_ORIGINAL_TEXTURES=1 turns it off; NFS4_DUMP_TEXTURES=<folder> (test host) writes
  * every texture the game uses there in the same format under its key, for checking the keys against the QFS. */
 #include "plat.h"
@@ -28,25 +30,30 @@ uint64_t hd_texture_key(const uint32_t *px, int w, int h) {
     return k;
 }
 
-typedef struct { uint64_t key; int dir; } HdKey;
+int gpu_astc_supported(void);
+
+typedef struct { uint64_t key; int dir, astc; } HdKey;
 static HdKey *g_keys;
-static int g_nkeys, g_loaded;
+static int g_nkeys, g_loaded, g_astc;
 static char g_dirs[2][1100];
 
 static void add_key(const char *name, int is_dir, uint32_t size, void *ctx) {
     int dir = *(const int *)ctx;
-    if (is_dir || size < 12 || strlen(name) != 21 || strcmp(name + 16, ".rgba")) return;
+    if (is_dir || size < 12 || strlen(name) != 21) return;
+    int astc = !strcmp(name + 16, ".astc");
+    if (!astc && strcmp(name + 16, ".rgba")) return;
+    if (astc && !g_astc) return;
     char *end;
     uint64_t k = strtoull(name, &end, 16);
     if (end != name + 16) return;
     HdKey *grown = realloc(g_keys, (size_t)(g_nkeys + 1) * sizeof *g_keys);
     if (!grown) return;
     g_keys = grown;
-    g_keys[g_nkeys].key = k; g_keys[g_nkeys].dir = dir; g_nkeys++;
+    g_keys[g_nkeys].key = k; g_keys[g_nkeys].dir = dir; g_keys[g_nkeys].astc = astc; g_nkeys++;
 }
-static int cmp_key(const void *a, const void *b) {     /* by key, the first folder first */
+static int cmp_key(const void *a, const void *b) {     /* by key, the first folder first, then ASTC first */
     const HdKey *x = a, *y = b;
-    return x->key != y->key ? (x->key < y->key ? -1 : 1) : x->dir - y->dir;
+    return x->key != y->key ? (x->key < y->key ? -1 : 1) : x->dir != y->dir ? x->dir - y->dir : y->astc - x->astc;
 }
 static int cmp_find(const void *a, const void *b) {
     uint64_t x = *(const uint64_t *)a, y = ((const HdKey *)b)->key;
@@ -56,6 +63,7 @@ static int cmp_find(const void *a, const void *b) {
 static void load_index(void) {
     g_loaded = 1;
     if (getenv("NFS4_ORIGINAL_TEXTURES")) return;
+    g_astc = gpu_astc_supported();
     const char *roots[2] = { plat_mods_dir(), plat_game_dir() };
     for (int i = 0; i < 2; i++) {
         if (!roots[i] || !roots[i][0]) continue;
@@ -85,8 +93,10 @@ static void dump(uint64_t key, const uint32_t *px, int w, int h) {
     fclose(f);
 }
 
-/* the redrawn picture for these pixels (malloc'd RGBA, *ow x *oh, same shape), or NULL */
-uint32_t *hd_texture_find(const uint32_t *px, int w, int h, int *ow, int *oh) {
+/* the redrawn picture for these pixels, *ow x *oh, same shape, malloc'd: RGBA with *levels = 0, or ASTC 4x4 blocks
+ * of *levels mip levels (largest first); NULL if there is none */
+void *hd_texture_find(const uint32_t *px, int w, int h, int *ow, int *oh, int *levels) {
+    *levels = 0;
     if (!g_loaded) load_index();
     if (!g_nkeys && !getenv("NFS4_DUMP_TEXTURES")) return NULL;
     uint64_t key = hd_texture_key(px, w, h);
@@ -95,20 +105,32 @@ uint32_t *hd_texture_find(const uint32_t *px, int w, int h, int *ow, int *oh) {
     if (!hit) return NULL;
     while (hit > g_keys && hit[-1].key == key) hit--;     /* the mods folder's copy, if both have one */
     char path[1200];
-    snprintf(path, sizeof path, "%s/%016llx.rgba", g_dirs[hit->dir], (unsigned long long)key);
+    snprintf(path, sizeof path, "%s/%016llx.%s", g_dirs[hit->dir], (unsigned long long)key, hit->astc ? "astc" : "rgba");
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
-    uint32_t head[3];
-    uint32_t *out = NULL;
-    if (fread(head, sizeof head, 1, f) == 1 && head[0] == 0x31544448u && head[1] >= (uint32_t)w && head[2] >= (uint32_t)h &&
-        head[1] <= 4096 && head[2] <= 4096 && (uint64_t)head[1] * (uint32_t)h == (uint64_t)head[2] * (uint32_t)w) {
-        out = malloc((size_t)head[1] * head[2] * 4);
-        if (out && fread(out, 4, (size_t)head[1] * head[2], f) != (size_t)head[1] * head[2]) { free(out); out = NULL; }
+    uint32_t head[5];
+    void *out = NULL;
+    int nlev = 0;
+    if (fread(head, 12, 1, f) == 1 && head[0] == (hit->astc ? 0x32544448u /* "HDT2" */ : 0x31544448u /* "HDT1" */) &&
+        head[1] >= (uint32_t)w && head[2] >= (uint32_t)h && head[1] <= 4096 && head[2] <= 4096 &&
+        (uint64_t)head[1] * (uint32_t)h == (uint64_t)head[2] * (uint32_t)w) {
+        size_t bytes = (size_t)head[1] * head[2] * 4;
+        if (hit->astc) {
+            bytes = 0;
+            if (fread(head + 3, 8, 1, f) == 1 && head[4] == 0x0404 && head[3] >= 1 && head[3] <= 13) {
+                uint32_t lw = head[1], lh = head[2];
+                nlev = (int)head[3];
+                for (int l = 0; l < nlev; l++) { bytes += (size_t)((lw + 3) / 4) * ((lh + 3) / 4) * 16; if (lw > 1) lw >>= 1; if (lh > 1) lh >>= 1; }
+            }
+        }
+        out = bytes ? malloc(bytes) : NULL;
+        if (out && fread(out, 1, bytes, f) != bytes) { free(out); out = NULL; }
     }
     fclose(f);
     if (!out) { plat_log("hd textures: %s is not a usable %dx%d redraw", path, w, h); return NULL; }
+    *levels = nlev;
     *ow = (int)head[1]; *oh = (int)head[2];
     static int logged;
-    if (logged++ < 4 || getenv("NFS4_TRACE_HD")) plat_log("hd textures: %dx%d -> %dx%d (%016llx)", w, h, *ow, *oh, (unsigned long long)key);
+    if (logged++ < 4 || getenv("NFS4_TRACE_HD")) plat_log("hd textures: %dx%d -> %dx%d%s (%016llx)", w, h, *ow, *oh, nlev ? " ASTC" : "", (unsigned long long)key);
     return out;
 }

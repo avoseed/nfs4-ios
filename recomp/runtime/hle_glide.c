@@ -367,8 +367,8 @@ static void shade_pixel(int x, int y, float z, float oow, float sow, float tow, 
 /* ---------------------------------------------------------------- GPU path */
 
 /* decoded texture cache keyed by TMU address + format; downloads invalidate overlaps */
-typedef struct { uint32_t addr, bytes; int format, large_lod, aspect; uint32_t pal; int id, w, h, gw, gh, stale; uint32_t gpu_bytes; uint64_t used, key; } TexEntry;
-uint32_t *hd_texture_find(const uint32_t *px, int w, int h, int *ow, int *oh);   /* hd_textures.c */
+typedef struct { uint32_t addr, bytes; int format, large_lod, aspect; uint32_t pal; int id, w, h, gw, gh, stale, astc; uint32_t gpu_bytes; uint64_t used, key; } TexEntry;
+void *hd_texture_find(const uint32_t *px, int w, int h, int *ow, int *oh, int *levels);   /* hd_textures.c */
 uint64_t hd_texture_key(const uint32_t *px, int w, int h);
 int hle_glide_in_menu(void);
 #define TEXCACHE 2048
@@ -381,6 +381,15 @@ static void gpu_flush(void);
 static uint32_t texture_bytes(int w,int h) {
     uint32_t n=0;
     for(;;) { n+=(uint32_t)w*h*4; if(w==1 && h==1)return n; if(w>1)w>>=1; if(h>1)h>>=1; }
+}
+static uint32_t astc_bytes(int w,int h,int levels) {          /* ASTC 4x4: 16 bytes a block, every level */
+    uint32_t n=0;
+    for(int l=0;l<levels;l++) { n+=(uint32_t)((w+3)/4)*((h+3)/4)*16; if(w>1)w>>=1; if(h>1)h>>=1; }
+    return n;
+}
+/* a GPU texture for a redraw (levels > 0: ASTC from the pack, else RGBA): -1 if it cannot be made */
+static int create_texture(int w,int h,int levels,int mipmapped) {
+    return levels ? gpu_texture_create_astc(w,h,levels) : gpu_texture_create(w,h,mipmapped);
 }
 static void release_texture(TexEntry *e) {
     if(e->id>=0) { gpu_texture_destroy(e->id); g_gpu_texture_bytes-=e->gpu_bytes; }
@@ -448,20 +457,27 @@ static int gpu_tex_id(void) {
         }
     g_clamp_s = cs; g_clamp_t = ct;
     /* a redrawn picture of these pixels (hd_textures.c) goes to the GPU in their place, larger, same shape */
-    int gw = t->w, gh = t->h;
-    uint32_t *hd = hd_texture_find(px, t->w, t->h, &gw, &gh);
-    if (e->id >= 0 && (e->gw != gw || e->gh != gh)) { gpu_flush(); release_texture(e); }
+    int gw = t->w, gh = t->h, levels = 0;
+    void *hd = hd_texture_find(px, t->w, t->h, &gw, &gh, &levels);
+    if (e->id >= 0 && (e->gw != gw || e->gh != gh || e->astc != (levels > 0))) { gpu_flush(); release_texture(e); }
     if (e->id < 0) {
-        uint32_t bytes=texture_bytes(gw,gh);
+        uint32_t bytes=levels ? astc_bytes(gw,gh,levels) : texture_bytes(gw,gh);
         make_texture_room(bytes,e);
-        e->id=gpu_texture_create(gw,gh,1);
+        e->id=create_texture(gw,gh,levels,1);
+        if (e->id < 0 && levels) {                       /* no ASTC texture: the original picture */
+            free(hd); hd = NULL; levels = 0; gw = t->w; gh = t->h;
+            bytes = texture_bytes(gw, gh);
+            make_texture_room(bytes, e);
+            e->id = gpu_texture_create(gw, gh, 1);
+        }
         if(e->id>=0) { e->gpu_bytes=bytes; g_gpu_texture_bytes+=bytes; }
     }
+    e->astc = levels > 0;
     e->used=++g_tex_clock;
     e->addr = t->addr; e->format = t->format; e->large_lod = t->large_lod; e->aspect = t->aspect;
     e->w = t->w; e->h = t->h; e->gw = gw; e->gh = gh; e->pal = pal; e->stale = 0;
     e->bytes = tex_mem_required(t->small_lod, t->large_lod, t->aspect, t->format);
-    if (e->id >= 0) gpu_texture_upload(e->id, hd ? hd : px);
+    if (e->id >= 0) { if (levels) gpu_texture_upload_astc(e->id, hd); else gpu_texture_upload(e->id, hd ? hd : px); }
     e->key = getenv("NFS4_MENU_MAP") ? hd_texture_key(px, t->w, t->h) : 0;
     free(hd);
     free(px);
@@ -659,11 +675,16 @@ static void gpu_clear_rect(uint32_t rgba, float depth, int with_depth) {
  * (hd_textures.c, key over the changed pixels, the rest see-through); a larger picture of the same shape is drawn in
  * its place. */
 static void gpu_lfb_blit(const uint32_t *rgba, int changed) {
-    static int id = -1, tw, th;
-    int gw = W, gh = H;
-    uint32_t *hd = W == 640 && H == 480 && changed > W * H / 2 ? hd_texture_find(rgba, W, H, &gw, &gh) : NULL;
-    if (id < 0 || tw != gw || th != gh) { if (id >= 0) gpu_texture_destroy(id); id = gpu_texture_create(gw, gh, 0); tw = gw; th = gh; }
-    gpu_texture_upload(id, hd ? hd : rgba);
+    static int id = -1, tw, th, tl;
+    int gw = W, gh = H, levels = 0;
+    void *hd = W == 640 && H == 480 && changed > W * H / 2 ? hd_texture_find(rgba, W, H, &gw, &gh, &levels) : NULL;
+    if (id < 0 || tw != gw || th != gh || tl != levels) {
+        if (id >= 0) gpu_texture_destroy(id);
+        id = create_texture(gw, gh, levels, 0);
+        if (id < 0 && levels) { free(hd); hd = NULL; levels = 0; gw = W; gh = H; id = gpu_texture_create(gw, gh, 0); }
+        tw = gw; th = gh; tl = levels;
+    }
+    if (levels) gpu_texture_upload_astc(id, hd); else gpu_texture_upload(id, hd ? hd : rgba);
     free(hd);
     gpu_flush();
     GpuState s;

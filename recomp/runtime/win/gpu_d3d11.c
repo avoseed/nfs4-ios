@@ -120,6 +120,12 @@ void gpu_texture_upload(int id, const uint32_t *rgba) {
     if (texs[id].mipmapped) ID3D11DeviceContext_GenerateMips(ctx, texs[id].srv);
 }
 
+/* no ASTC in Direct3D 11: the redraw pack's .astc pictures are left out on this host (hd_textures.c);
+ * tools/hd_astc.py --decoded gives the same pictures decoded, for checking them here */
+int gpu_astc_supported(void) { return 0; }
+int gpu_texture_create_astc(int w, int h, int levels) { (void)w; (void)h; (void)levels; return -1; }
+void gpu_texture_upload_astc(int id, const uint8_t *blocks) { (void)id; (void)blocks; }
+
 void gpu_texture_destroy(int id) {
     if (id < 0 || id >= MAXTEX || !texs[id].t) return;
     ID3D11ShaderResourceView_Release(texs[id].srv);

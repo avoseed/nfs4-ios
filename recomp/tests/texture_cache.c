@@ -20,6 +20,9 @@ void gpu_swap(void){abort();}
 void plat_present(const uint32_t *p,int w,int h){(void)p;(void)w;(void)h;abort();}
 int gpu_texture_create(int w,int h,int m){(void)w;(void)h;(void)m;abort();}
 void gpu_texture_upload(int id,const uint32_t *p){(void)id;(void)p;abort();}
+int gpu_texture_create_astc(int w,int h,int l){(void)w;(void)h;(void)l;abort();}
+void gpu_texture_upload_astc(int id,const uint8_t *b){(void)id;(void)b;abort();}
+void *hd_texture_find(const uint32_t *px,int w,int h,int *ow,int *oh,int *levels){(void)px;(void)w;(void)h;(void)ow;(void)oh;(void)levels;abort();}
 void guest_free(uint32_t p){(void)p;abort();}
 uint32_t guest_alloc(uint32_t n){(void)n;abort();}
 int gpu_init(int w,int h){(void)w;(void)h;abort();}

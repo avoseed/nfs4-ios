@@ -348,8 +348,33 @@
   - PARK 간판, EMPIRE 벽보, REDROCK 판자는 이번 키로 바뀌어 올라갔습니다.
   - UK 펍 간판·버스와 REDROCK 광고판은 80초 안에 화면에 오지 않았습니다. 키가 팩에 있는 것만 확인했습니다.
 
+## 압축 팩: ASTC 4x4 (`tools/hd_astc.py`, 2026-11-17)
+
+- **형식:** `hdtex/<키>.astc` = "HDT2", 너비, 높이, 단계 수, 0x0404, 그다음 큰 단계부터 1x1까지 모든 밉 단계의 ASTC 4x4 블록(16바이트).
+  - 아이폰 GPU가 압축된 채로 읽습니다. 바이트는 화소당 1(무압축은 4)이고, 밉은 파일에 들어 있습니다(2x2 평균, Metal generateMipmaps와 같음).
+  - 같은 키에 `.rgba`와 `.astc`가 함께 있으면 `.astc`를 씁니다. ASTC를 못 쓰는 GPU에서는 `.astc`를 목록에 넣지 않습니다.
+- **앱:** `hd_textures.c`가 HDT2를 읽고, `gpu_texture_create_astc`·`gpu_texture_upload_astc`로 올립니다.
+  - Metal은 `MTLPixelFormatASTC_4x4_LDR`을 씁니다. 예산(64 MiB)에는 ASTC 바이트로 셉니다.
+  - Direct3D 11(PC 테스트 호스트)에는 ASTC가 없어 `.astc`는 건너뜁니다.
+- **만들기:** `py -3 -B tools/hd_astc.py --quality thorough --out D:/upscale/NFS4/pack-astc --decoded D:/upscale/NFS4/pack-astc-decoded`
+  - 입력은 `pack/hdtex/*.rgba`입니다. 인코더는 ARM astcenc 5.7.0 공식 배포본입니다(FF7-iOS `tools/astcenc`, 체크섬 확인본).
+  - 4096 폭 판에 여러 장을 4픽셀 단위로 붙여 한 번에 인코딩합니다. 블록이 두 그림에 걸치지 않아 잘라 내도 그대로입니다.
+  - `--decoded`는 GPU가 보게 될 그림을 다시 풀어 HDT1로 씁니다. PC에서 압축 결과를 그대로 보려고 씁니다.
+  - 팩을 바꾸면(`hd_texture_pack.py`, `menu_hd.py pack`) 이 단계를 다시 돌립니다.
+- **결과:** 12951장, 1204.4 MB → 402.2 MB(밉 포함)입니다. thorough로 668초 걸렸습니다.
+  - RGB PSNR은 중앙값 50.8 dB, 가장 낮은 것도 36.0 dB입니다.
+  - 알파가 0↔0 아님으로 바뀐 화소는 56장에서 나왔습니다. 모두 부드러운 반투명 가장자리이고, 값은 22/255 이하입니다.
+- **예산:** GERMANY(337장)는 무압축 RGBA+밉으로 71.3 MiB라 그것만으로 64 MiB를 넘습니다. ASTC로는 17.8 MiB입니다.
+- **PC 확인:** GERMANY를 Hills 자리에 넣고 원본, 무압축, ASTC를 다시 푼 팩으로 80초씩 달렸습니다. 셋 다 트랩이 없었습니다.
+  - 로딩 화면은 무압축과 ASTC가 화소까지 같았습니다.
+  - 레이스 화면은 확대해도 차이가 보이지 않았습니다.
+  - PC는 ASTC를 푼 RGBA를 올리므로, 무압축과 ASTC 둘 다 64.0 MiB 상한까지 찼습니다.
+- **받기 서버:** `E:/ios-ports/games.json`의 NFS4 항목에서 `overlay`가 `D:/upscale/NFS4/pack-astc`입니다. 그래서 `hdtex/*.astc`가 nfs4.exe 옆으로 갑니다.
+
 ## 기기에서 확인할 것
 
-- 텍스처 예산은 64 MiB입니다(`hle_glide.c`). 4배 텍스처는 장당 약 350 KB라, 한 트랙을 다 바꾸면 예산을 넘어 내보내고 다시 읽기를 반복할 수 있습니다. 레이스 중 끊김과 메모리를 봐야 합니다.
-- 바꾼 텍스처를 처음 쓸 때 파일에서 읽습니다(장당 256 KB). 새 구간에 들어설 때 끊기는지 봐야 합니다.
+- ASTC 팩이 실제로 올라가는지 봐야 합니다. 로그에 `hd textures: ... ASTC`가 나와야 하고, 화면이 깨지거나 검게 나오면 안 됩니다.
+- GERMANY 같은 큰 트랙에서 끊김이 없는지, 예산 안(약 18 MiB + 원본)에 드는지 봐야 합니다.
+- 바꾼 텍스처를 처음 쓸 때 파일에서 읽습니다(ASTC는 장당 약 90 KB). 새 구간에 들어설 때 끊기는지 봐야 합니다.
 - 실제 Hometown 레이스에서 바뀐 텍스처가 제자리에 맞는지 봐야 합니다(PC에서는 Hills 자리를 빌려 확인함).
+- PC에서 받기: 약 430 MB, 12951개 파일입니다. 받는 시간과 앱의 파일 목록 처리를 봐야 합니다.
