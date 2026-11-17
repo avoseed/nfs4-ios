@@ -122,6 +122,16 @@ void rt_trace_enter(Cpu *c, uint32_t addr) {
     }
 }
 
+/* recursive: pool functions call each other */
+static PlatMutex *g_pool_lock;
+static __thread int g_pool_depth;
+void rt_pool_enter(void) {
+    if (!g_pool_depth++) plat_mutex_lock(g_pool_lock);       /* made in rt_boot, before any guest code */
+}
+void rt_pool_leave(void) {
+    if (!--g_pool_depth) plat_mutex_unlock(g_pool_lock);
+}
+
 #ifdef RT_WATCH
 uint32_t rt_watch_lo, rt_watch_len;
 __thread uint32_t rt_cur_fn;
@@ -539,6 +549,7 @@ static void trace_window(void *p) {
 }
 
 int rt_boot(void) {
+    g_pool_lock = plat_mutex_new();
     if (getenv("NFS4_TRACE_AFTER")) plat_thread_start(trace_window, (void *)getenv("NFS4_TRACE_AFTER"));
     if (getenv("NFS4_DUMP_AFTER")) plat_thread_start(dump_after, (void *)getenv("NFS4_DUMP_AFTER"));
 #ifdef RT_WATCH

@@ -215,7 +215,8 @@ float plat_wide_aspect(void) { const char *e = getenv("NFS4_WIDE"); return e ? (
 int plat_frame_cap(void) { const char *e = getenv("NFS4_FPS"); return nfs4_scene_cap(e ? atoi(e) : 60,hle_glide_in_menu()); }
 
 /* Scripted input for unattended testing: NFS4_KEYS="3:1C,5.5:D0,..." presses DIK scan code
- * (hex) at t seconds for 150 ms. NFS4_SHOTS=<seconds> saves shot_NNN.bmp at that interval. */
+ * (hex) at t seconds for 150 ms; "t:wr" / "t:wm" waits there for the race / a menu (later times follow it). NFS4_SHOTS=<seconds> saves shot_NNN.bmp at that interval. */
+int hle_glide_in_menu(void);
 static void key_script(void *p) {
     const char *s = p;
     uint64_t t0 = plat_ticks_us();
@@ -225,6 +226,17 @@ static void key_script(void *p) {
         if (!colon) break;
         uint64_t due = t0 + (uint64_t)(t * 1e6);
         while (plat_ticks_us() < due) Sleep(5);
+        if (colon[1] == 'w') {                     /* wr / wm: wait until the race (menu) is on screen; later times
+                                                       count from here as if this were t, so they follow loading */
+            int want_menu = colon[2] == 'm';
+            while (hle_glide_in_menu() != want_menu) Sleep(20);
+            plat_log("script: %s reached", want_menu ? "menu" : "race");
+            t0 = plat_ticks_us() - (uint64_t)(t * 1e6);
+            const char *cm = strchr(colon, ',');
+            if (!cm) break;
+            s = cm + 1;
+            continue;
+        }
         if (colon[1] == 'j') {                     /* jx<v>/<secs>, jy<v>/<secs>, jb<mask>/<secs>: joystick, then rest */
             double hold = 0.5;
             const char *slash = strchr(colon, '/'), *cm0 = strchr(colon, ',');
@@ -308,7 +320,30 @@ static void shot_thread(void *p) {
     }
 }
 
+/* a host crash (access violation in recompiled code or the runtime) goes to the log with the guest address it
+ * touched and, in the --watch build, the guest function it was in, before the process ends */
+#ifdef RT_WATCH
+extern __thread uint32_t rt_cur_fn;
+#define CUR_FN rt_cur_fn
+#else
+#define CUR_FN 0u
+#endif
+static LONG WINAPI crash_log(EXCEPTION_POINTERS *e) {
+    EXCEPTION_RECORD *r = e->ExceptionRecord;
+    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION && r->ExceptionCode != EXCEPTION_INT_DIVIDE_BY_ZERO &&
+        r->ExceptionCode != EXCEPTION_ILLEGAL_INSTRUCTION && r->ExceptionCode != EXCEPTION_STACK_OVERFLOW) return EXCEPTION_CONTINUE_SEARCH;
+    uintptr_t at = r->NumberParameters > 1 ? (uintptr_t)r->ExceptionInformation[1] : 0;
+    HMODULE mod = NULL;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)r->ExceptionAddress, &mod);
+    plat_log("FATAL: host exception %08lX at host %p (module +%llX), %s %p (guest %08llX), guest function %08X, thread %lu",
+             r->ExceptionCode, r->ExceptionAddress, (unsigned long long)((uintptr_t)r->ExceptionAddress - (uintptr_t)mod),
+             r->ExceptionInformation[0] ? "writing" : "reading", (void *)at, (unsigned long long)(at - (uintptr_t)MEM), CUR_FN,
+             GetCurrentThreadId());
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 int main(int argc, char **argv) {
+    SetUnhandledExceptionFilter(crash_log);
     timeBeginPeriod(1);              /* 1 ms waits, like the game expects from its multimedia timers */
     InitializeCriticalSection(&g_log_cs);
     InitializeCriticalSection(&g_frame_cs);

@@ -389,6 +389,11 @@ def h(a):
     return '0x%08Xu' % (a & 0xFFFFFFFF)
 
 
+# entry points of nfs4.exe's memory pool (Modern Patch build), serialised in Emitter.function
+POOL_FUNCTIONS = {0x0052C700, 0x0052D7B0, 0x0052D8C0, 0x0052D9A0, 0x0052DA30, 0x0052DAA0, 0x0052DB50, 0x0052DC50,
+                  0x0052DD70, 0x0052DFB0, 0x0052E0F0, 0x0052E200, 0x0052E300, 0x0052E340, 0x0052E380, 0x0052E3E0}
+
+
 class Emitter:
     def __init__(self, mod, prefix, funcs, tables, import_ids):
         self.mod = mod
@@ -520,7 +525,18 @@ class Emitter:
             for s in fn.succ.get(a, []):
                 if s <= a and s in fn.labels:
                     loop_heads.add(s)
-        self.out('void %s(Cpu *c) {' % self.fname(fn.entry))
+        name = self.fname(fn.entry)
+        if self.prefix == 'nfs4' and self.mod.pe.FILE_HEADER.TimeDateStamp == 0x57334341 and fn.entry in POOL_FUNCTIONS:
+            # The game's memory pool (0052C700 lookup, 0052D7B0..0052E3E0) reads and walks its block chain outside
+            # its critical section: harmless on a 1999 single-core PC, but guest threads here run on several cores
+            # at once and two of them can take the same block (host crash reading a wild pointer in 0052E0F0).
+            # Every pool entry point runs under one recursive lock (rt_core.c).
+            self.out('static void %s_locked(Cpu *c);' % name)
+            self.out('void %s(Cpu *c) { rt_pool_enter(); %s_locked(c); rt_pool_leave(); }' % (name, name))
+            name = 'static void %s_locked' % name
+            self.out('%s(Cpu *c) {' % name)
+        else:
+            self.out('void %s(Cpu *c) {' % name)
         self.out('  REGS_DECL; FLAGS_DECL; SYNC_IN; RT_ENTER(%s);' % h(fn.entry))
         # Observed in paired menu/race traces for this exact Modern Patch build.
         # This only tells the host which overlay to show; guest state is unchanged.

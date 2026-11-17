@@ -11,6 +11,10 @@ The repository contains port source and an encrypted owner input bundle. Origina
 
 `python -B tools/test_mmx.py` compares the portable MMX implementation with the real x86 CPU. Other recompiler differential tests are under `recomp/tests/`.
 
+Host crash tools: an unhandled host exception logs `FATAL: host exception ... (module +OFFSET) ... guest XXXXXXXX` to `nfs4host.log`. `py -3 recomp/build_host.py --sym` builds `nfs4host_sym.exe` with a PDB (run it with `NFS4_HOST_EXE`), and `py -3 tools/host_symbol.py OFFSET [exe]` names the function; relinking the plain build's objects with `-g` gives a matching PDB for an `nfs4host.exe` crash. Key scripts can wait for loading with `t:wr` (race) / `t:wm` (menu); later times count from there.
+
+Memory pool: nfs4.exe's pool (0052C700, 0052D7B0..0052E3E0) walks and claims blocks outside its critical section. Guest threads run on several host cores at once, so two threads could take the same block (seen once as a host crash reading a wild pointer in 0052E0F0). `x86rec.py` (POOL_FUNCTIONS) wraps those entry points in one recursive lock (`rt_pool_enter`/`rt_pool_leave`, rt_core.c).
+
 ## Owner iOS workflow
 
 The local key is a random base64 AES-256 key stored in ignored `secrets/build.key`. Configure the same value as the repository secret `NFS4_BUILD_KEY`, then use the manual `Build IPA` workflow. For your own copy of the game, run `python -B tools/ci_crypto.py bundle-inputs` to prepare a new encrypted input bundle and hash manifest with your own key.

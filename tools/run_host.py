@@ -11,7 +11,7 @@ if len(sys.argv)>6 and sys.argv[6]:
  except ValueError: raise SystemExit('WAV argument is a duration in seconds, not a file path.')
  if not 1 <= wav_seconds <= 600: raise SystemExit('WAV duration must be 1..600 seconds.')
  env['NFS4_WAV']=str(wav_seconds)  # host writes <save>/audio.wav
-cmd=[str(r/'recomp/build/nfs4host.exe'),str(r/'game'),str(save)]
+cmd=[os.environ.get('NFS4_HOST_EXE',str(r/'recomp/build/nfs4host.exe')),str(r/'game'),str(save)]
 started=time.monotonic(); stopped_by_test=False
 with (save/'stdout.log').open('w',encoding='utf-8') as f:
  p=subprocess.Popen(cmd,cwd=r,env=env,stdout=f,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW)

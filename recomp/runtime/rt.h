@@ -216,6 +216,8 @@ uint64_t rt_rdtsc(void);
 uint64_t rt_mmx_binary(unsigned op, uint64_t a, uint64_t b);
 
 void hle_frontend_observed(int menu);
+void rt_pool_enter(void);   /* the game's memory pool, one guest thread at a time (x86rec POOL_FUNCTIONS) */
+void rt_pool_leave(void);
 
 
 
