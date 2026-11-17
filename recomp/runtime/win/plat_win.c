@@ -215,7 +215,7 @@ float plat_wide_aspect(void) { const char *e = getenv("NFS4_WIDE"); return e ? (
 int plat_frame_cap(void) { const char *e = getenv("NFS4_FPS"); return nfs4_scene_cap(e ? atoi(e) : 60,hle_glide_in_menu()); }
 
 /* Scripted input for unattended testing: NFS4_KEYS="3:1C,5.5:D0,..." presses DIK scan code
- * (hex) at t seconds for 150 ms; "t:wr" / "t:wm" waits there for the race / a menu (later times follow it). NFS4_SHOTS=<seconds> saves shot_NNN.bmp at that interval. */
+ * (hex) at t seconds for 150 ms; "t:wr" / "t:wm" waits there for the race / a menu (later times follow it); "t:p<addr>=<text>" writes guest memory. NFS4_SHOTS=<seconds> saves shot_NNN.bmp at that interval. */
 int hle_glide_in_menu(void);
 static void key_script(void *p) {
     const char *s = p;
@@ -226,6 +226,20 @@ static void key_script(void *p) {
         if (!colon) break;
         uint64_t due = t0 + (uint64_t)(t * 1e6);
         while (plat_ticks_us() < due) Sleep(5);
+        if (colon[1] == 'p') {                     /* p<hex addr>=<text>: write text into guest memory (tests only) */
+            char *eq;
+            uint32_t at = (uint32_t)strtoul(colon + 2, &eq, 16);
+            if (*eq == '=') {
+                const char *v = eq + 1, *end = strchr(v, ',');
+                size_t n = end ? (size_t)(end - v) : strlen(v);
+                memcpy(MEM + at, v, n);
+                plat_log("script: wrote %.*s at %08X", (int)n, v, at);
+            }
+            const char *cm = strchr(colon, ',');
+            if (!cm) break;
+            s = cm + 1;
+            continue;
+        }
         if (colon[1] == 'w') {                     /* wr / wm: wait until the race (menu) is on screen; later times
                                                        count from here as if this were t, so they follow loading */
             int want_menu = colon[2] == 'm';

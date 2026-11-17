@@ -19,7 +19,11 @@
 #   1b. files: py -3 -B tools/menu_hd.py files [<game data folder>] [--root ..]
 #      adds the full-screen pictures straight from FEART (loading screens of every track, title, results; see
 #      SCREEN_FILES), cut both ways the front end cuts a screen.
-#   2. bundle: py -3 -B tools/menu_hd.py bundle <N> [--max-sheets K] [--root ..]
+#   1c. add: py -3 -B tools/menu_hd.py add <dump> <key> [<key> ...] [--root ..]
+#      adds single dumped textures as pictures of their own (what collect leaves out because it is on screen for
+#      too few frames, such as the spinning globe's frames): -> input/MENU/<key[:10]>_<w>x<h>.png
+#   2. bundle: py -3 -B tools/menu_hd.py bundle <N> [--max-sheets K] [--missing] [--root ..]
+#      --missing: only pictures with a piece not yet fitted (no output/MENU/<piece>.png)
 #      -> <root>/redraw<N>, <N+1>, ... in the track bundles' layout (send/, todo.txt, boxes.json, 프롬프트.md).
 #      A screen-sized picture is split into pieces of at most 320x240 (plus a 24 px margin of context), one a sheet;
 #      small pictures share sheets, enlarged up to 4x (two to a row at least; a long bar across the sheet). tools/redraw_fit.py fits the answers as usual (3x output).
@@ -278,11 +282,33 @@ def sheet_image(img):
     return Image.fromarray(rgb, 'RGB')
 
 
-def bundle(root, first, max_sheets):
+def add(root, dump, keys):
+    path = root / 'input' / 'menu.json'
+    index = json.loads(path.read_text(encoding='utf-8'))
+    known = {t[0] for e in index.values() for t in e['tiles']}
+    for key in keys:
+        if key in known:
+            print('%s: already known' % key)
+            continue
+        img = read_tex(dump, key)
+        name = 'MENU/%s_%dx%d' % (key[:10], img.width, img.height)
+        img.save(root / 'input' / (name + '.png'))
+        a = np.asarray(img.getchannel('A'))
+        index[name] = {'w': img.width, 'h': img.height, 'screen': [0, 0], 'frame': 0, 'map': 'dump ' + dump.name,
+                       'alpha': bool((a < 255).any()), 'soft': bool(((a > 0) & (a < 255)).any()),
+                       'tiles': [[key, 0, 0, img.width, img.height]]}
+        known.add(key)
+        print(name)
+    path.write_text(json.dumps(index, indent=1), encoding='utf-8')
+
+
+def bundle(root, first, max_sheets, missing=False):
     index = json.loads((root / 'input' / 'menu.json').read_text(encoding='utf-8'))
     big, small = [], []
     for name, e in sorted(index.items(), key=lambda t: (t[1]['map'], t[1]['frame'])):
         if e.get('skip'):
+            continue
+        if missing and all((root / 'output' / (name + suffix + '.png')).exists() for suffix, _, _ in pieces(e)):
             continue
         img = Image.open(root / 'input' / (name + '.png')).convert('RGBA')
         for suffix, crop, inner in pieces(e):
@@ -392,8 +418,13 @@ def main():
         collect(root, pathlib.Path(args[1]), args[2:])
     elif cmd == 'files':
         files(root, pathlib.Path(args[1]) if len(args) > 1 else pathlib.Path(__file__).resolve().parents[1] / 'game' / 'data')
+    elif cmd == 'add':
+        add(root, pathlib.Path(args[1]), args[2:])
     elif cmd == 'bundle':
-        bundle(root, int(args[1]), max_sheets)
+        missing = '--missing' in args
+        if missing:
+            args.remove('--missing')
+        bundle(root, int(args[1]), max_sheets, missing)
     elif cmd == 'pack':
         pack(root, pathlib.Path(args[1]))
     else:
