@@ -367,8 +367,10 @@ static void shade_pixel(int x, int y, float z, float oow, float sow, float tow, 
 /* ---------------------------------------------------------------- GPU path */
 
 /* decoded texture cache keyed by TMU address + format; downloads invalidate overlaps */
-typedef struct { uint32_t addr, bytes; int format, large_lod, aspect; uint32_t pal; int id, w, h, gw, gh, stale; uint32_t gpu_bytes; uint64_t used; } TexEntry;
+typedef struct { uint32_t addr, bytes; int format, large_lod, aspect; uint32_t pal; int id, w, h, gw, gh, stale; uint32_t gpu_bytes; uint64_t used, key; } TexEntry;
 uint32_t *hd_texture_find(const uint32_t *px, int w, int h, int *ow, int *oh);   /* hd_textures.c */
+uint64_t hd_texture_key(const uint32_t *px, int w, int h);
+int hle_glide_in_menu(void);
 #define TEXCACHE 2048
 static TexEntry g_texcache[TEXCACHE];
 static int g_ntex;
@@ -460,6 +462,7 @@ static int gpu_tex_id(void) {
     e->w = t->w; e->h = t->h; e->gw = gw; e->gh = gh; e->pal = pal; e->stale = 0;
     e->bytes = tex_mem_required(t->small_lod, t->large_lod, t->aspect, t->format);
     if (e->id >= 0) gpu_texture_upload(e->id, hd ? hd : px);
+    e->key = getenv("NFS4_MENU_MAP") ? hd_texture_key(px, t->w, t->h) : 0;
     free(hd);
     free(px);
     g_last_tex = (int)(e - g_texcache);
@@ -511,9 +514,30 @@ static GpuVertex gpu_vertex(const V *v) {
     return o;
 }
 
+/* NFS4_MENU_MAP=<file> (test host): where each menu texture lands on the 640x480 screen, one line per new
+ * (frame, texture, triangle): frame key w h  x y s t  x y s t  x y s t  (s, t in texels), every 15th frame (every
+ * frame with NFS4_MENU_MAP_EVERY=1); NFS4_MENU_MAP_RACE=1 logs races too */
+static void menu_map(const V *a, const V *b, const V *c, int tex) {
+    static FILE *f; static int tried;
+    if (tex < 0 || g_last_tex < 0 || (g_frames % 15 && !getenv("NFS4_MENU_MAP_EVERY")) || (!hle_glide_in_menu() && !getenv("NFS4_MENU_MAP_RACE"))) return;
+    if (!tried) { tried = 1; const char *p = getenv("NFS4_MENU_MAP"); if (p) f = fopen(p, "w"); }
+    if (!f) return;
+    const TexEntry *e = &g_texcache[g_last_tex];
+    int maxd = g_tex.w > g_tex.h ? g_tex.w : g_tex.h;
+    float k = (float)maxd / 256.0f;
+    const V *v[3] = { a, b, c };
+    fprintf(f, "%d %016llx %d %d", g_frames, (unsigned long long)e->key, e->w, e->h);
+    for (int i = 0; i < 3; i++) {
+        float w = v[i]->oow != 0 ? 1.0f / v[i]->oow : 1.0f;
+        fprintf(f, "  %.1f %.1f %.1f %.1f", v[i]->x, v[i]->y, v[i]->sow * w * k, v[i]->tow * w * k);
+    }
+    fputc(10, f);
+}
+
 static void gpu_triangle(const V *a, const V *b, const V *c) {
     GpuState s;
     gpu_build_state(&s);
+    if (getenv("NFS4_MENU_MAP")) menu_map(a, b, c, s.tex);
     if (g_nbatch && (memcmp(&s, &g_bstate, sizeof s) || g_nbatch + 3 > BATCH_MAX)) gpu_flush();
     if (!g_nbatch) g_bstate = s;
     g_batch[g_nbatch++] = gpu_vertex(a);
@@ -630,11 +654,17 @@ static void gpu_clear_rect(uint32_t rgba, float depth, int with_depth) {
     gpu_draw(&s, q, 6);
 }
 
-/* GPU path: framebuffer writes through the LFB become a textured quad over the changed pixels */
-static void gpu_lfb_blit(const uint32_t *rgba) {
+/* GPU path: framebuffer writes through the LFB become a textured quad over the changed pixels. A write that
+ * changes most of a 640x480 screen (the loading screens) is looked up in the redraw pack like a texture
+ * (hd_textures.c, key over the changed pixels, the rest see-through); a larger picture of the same shape is drawn in
+ * its place. */
+static void gpu_lfb_blit(const uint32_t *rgba, int changed) {
     static int id = -1, tw, th;
-    if (id < 0 || tw != W || th != H) { if (id >= 0) gpu_texture_destroy(id); id = gpu_texture_create(W, H, 0); tw = W; th = H; }
-    gpu_texture_upload(id, rgba);
+    int gw = W, gh = H;
+    uint32_t *hd = W == 640 && H == 480 && changed > W * H / 2 ? hd_texture_find(rgba, W, H, &gw, &gh) : NULL;
+    if (id < 0 || tw != gw || th != gh) { if (id >= 0) gpu_texture_destroy(id); id = gpu_texture_create(gw, gh, 0); tw = gw; th = gh; }
+    gpu_texture_upload(id, hd ? hd : rgba);
+    free(hd);
     gpu_flush();
     GpuState s;
     memset(&s, 0, sizeof s);
@@ -1134,14 +1164,14 @@ GF(grLfbUnlock) {
             uint32_t a = g_lfb_guest + (uint32_t)i * (uint32_t)bpp;
             if (bpp == 2) {
                 uint16_t p = RD16(a);
-                if (p != g_lfb_snapshot[i]) { px[i] = g_lfb_write_mode == 1 || g_lfb_write_mode == 2 ? from555(p) : from565(p); any = 1; }
+                if (p != g_lfb_snapshot[i]) { px[i] = g_lfb_write_mode == 1 || g_lfb_write_mode == 2 ? from555(p) : from565(p); any++; }
             } else {
                 uint32_t p = RD32(a);
                 px[i] = ((p >> 16) & 0xFF) | (p & 0xFF00) | ((p & 0xFF) << 16) | 0xFF000000u;
-                any = 1;
+                any++;
             }
         }
-        if (any) gpu_lfb_blit(px);
+        if (any) gpu_lfb_blit(px, any);
         free(px);
         g_lfb_locked_buffer = -1;
         RETURN(2, 1);

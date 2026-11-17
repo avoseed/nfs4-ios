@@ -106,7 +106,7 @@ def fit_one(sheet, b, orig):
     sent = np.asarray(orig.convert('RGB').resize((w, h), Image.BICUBIC).convert('L'), np.float32)
     # found again by what the model saw: the sheet shows texels under alpha 128 as magenta
     amask = np.asarray(orig.getchannel('A').resize((w, h), Image.NEAREST)) >= 128
-    r = SEARCH
+    r = b.get('search', SEARCH)   # a box may set its own (0: a mostly see-through menu piece, nothing to find it by)
     region = sheet.crop((x - r, y - r, x + w + r, y + h + r))
     reg = np.asarray(region.convert('L'), np.float32)
     keyed = magenta(np.asarray(region))

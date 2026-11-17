@@ -111,6 +111,10 @@ def fsh(d):
             img = Image.new('RGBA', (w, h))
             px = struct.unpack_from('<%dH' % (w * h), d, p)
             img.putdata([(((v >> 10) & 31) * 255 // 31, ((v >> 5) & 31) * 255 // 31, (v & 31) * 255 // 31, 255 if v & 0x8000 else 0) for v in px])
+        elif code == 0x78 and w and h:                 # 565 (the front end's screens and car photos)
+            img = Image.new('RGBA', (w, h))
+            px = struct.unpack_from('<%dH' % (w * h), d, p)
+            img.putdata([(((v >> 11) & 31) * 255 // 31, ((v >> 5) & 63) * 255 // 63, (v & 31) * 255 // 31, 255) for v in px])
         if code in (0x7B, 0x7D, 0x7F, 0x7E, 0x78, 0x6D):
             out.append((name, code, w, h, img))
     return out
