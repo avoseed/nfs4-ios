@@ -52,6 +52,10 @@
   - GT1 TR0_016과 짝 TR0_025: Hydro Filters가 Hydro Pavers로 바뀌었습니다.
   - 지난번 답은 `redraw18/held`에 두었습니다.
 - **다시 그리기:** `redraw18`(3장 3칸). 받으면 `redraw_fit.py 18`, `redraw_mirror.py GT1`, 팩, ASTC 순서로 합니다.
+  - **받아서 반영(2026-11-21):**
+    - 세 칸 모두 글자가 원본과 같습니다. SLOW는 체크 무늬가 굵어졌지만 받았습니다.
+    - 4장을 팩과 ASTC 팩에 넣었습니다.
+    - PC에서 LOSTCANY·GT1 간판은 HD로 나왔습니다. COUNTRY SLOW와 GT1 짝은 달린 구간에 나오지 않았습니다.
 
 ## redraw1 다시 받은 답 (HOMETOWN 15장, 2026-11-21)
 
