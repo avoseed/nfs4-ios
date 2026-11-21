@@ -43,6 +43,16 @@
   - 글자·화살표 윤곽은 매끈하게 하라고 합니다.
   - 1254 같은 정사각형 결과는 그대로 받습니다.
 
+## 글자 점검과 redraw18 (2026-11-21)
+
+- **점검:** 4,419장을 대상으로 거울·뒤집힘 자동 검사를 돌렸고, 걸린 것은 0장입니다(`D:\upscale\NFS4\verify\scan.py`). 글자 무늬 변화 순위 위쪽 64장은 사람이 봤습니다(`verify\text.py`). 결과 전체는 `E:\ios-ports\handoff\NFS4-검증.md`에 있습니다.
+- **틀린 간판, 팩에서 뺌:** 4장은 원본을 씁니다.
+  - COUNTRY TR0_014: SLOW의 거울 글자가 풀렸습니다.
+  - LOSTCANY TR0_151: 간판 글자가 쇠창살로 바뀌었습니다.
+  - GT1 TR0_016과 짝 TR0_025: Hydro Filters가 Hydro Pavers로 바뀌었습니다.
+  - 지난번 답은 `redraw18/held`에 두었습니다.
+- **다시 그리기:** `redraw18`(3장 3칸). 받으면 `redraw_fit.py 18`, `redraw_mirror.py GT1`, 팩, ASTC 순서로 합니다.
+
 ## redraw1 다시 받은 답 (HOMETOWN 15장, 2026-11-21)
 
 - **받은 것:** Codex가 같은 15장(`E:\nfs4-upscale\redraw1`)을 다시 그렸습니다. `D:\upscale\NFS4\redraw1b`로 복사해 `redraw_fit.py 1b`로 맞췄습니다.
